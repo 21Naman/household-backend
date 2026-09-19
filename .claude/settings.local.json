@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash",
+      "Bash(python3 -)",
+      "Bash(timeout 600 .venv/bin/python -m pytest -q)",
+      "Bash(timeout 300 .venv/bin/python -m pytest tests/test_interfaces.py -q)",
+      "Bash(sed -i 's/from app.providers.ollama import _validate_against_schema, validate_structured_json/from app.providers.json_schema import validate_against_schema\\\\nfrom app.providers.ollama import validate_structured_json/' tests/test_providers_local.py)",
+      "Bash(sed -i 's/\\\\b_validate_against_schema\\(/validate_against_schema\\(/g' tests/test_providers_local.py)"
+    ]
+  }
+}
