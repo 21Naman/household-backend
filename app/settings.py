@@ -35,9 +35,9 @@ class Settings(BaseSettings):
     # unconfigured remote provider and falls back safely rather than sending
     # a request with an empty credential.
     groq_api_key: str | None = None
-    groq_model: str = "openai/gpt-oss-20b"
+    groq_model: str = "openai/gpt-oss-120b"
     gemini_api_key: str | None = None
-    gemini_model: str = "gemini-2.5-flash-lite"
+    gemini_model: str = "gemini-3.8-flash"
     recipe_provider_timeout_seconds: float = Field(default=20.0, gt=0)
 
     # -- Google Calendar (guest/availability context, B019) -----------------
