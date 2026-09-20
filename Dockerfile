@@ -34,6 +34,13 @@ ENV HOUSEHOLD_BIND_HOST=0.0.0.0 \
     HOUSEHOLD_PUBLIC_DEPLOYMENT=true \
     HOUSEHOLD_DEMO_SEED_ON_STARTUP=true \
     HOUSEHOLD_DATABASE_URL=sqlite:////app/data/household.db \
+    # Live Gnani TTS. The flag defaults to true, and the live rail requires
+    # a key AND the mock explicitly off -- so without this line a Space with
+    # a perfectly good GNANI key would still play a synthetic tone, and only
+    # a startup warning would say so. Playback spends real vendor credits;
+    # the per-household daily cap is per-process, not global (see
+    # docs/honest-limits.md).
+    HOUSEHOLD_GNANI_MOCK_ENABLED=false \
     # Tuned for a cook standing at a stove, not a reader working through the
     # page at their own pace. A named setting, changed here rather than in
     # the default, so the local build keeps the value it was designed for.
