@@ -158,12 +158,13 @@ def test_a_mishap_still_closes_the_loop_but_records_it_as_not_accepted(client):
     assert entry["leftovers_portions"] == 1.5
 
 
-def test_a_consumed_name_matching_no_lot_is_silently_ignored(client):
+def test_a_consumed_name_matching_no_lot_is_reported_rather_than_ignored(client):
     """Documents a real sharp edge rather than endorsing it: the deduction
     matches lots by exact name after strip/lower, so 'Basmati Rice' will not
-    find a 'Rice' lot. Nothing is deducted, nothing errors, and the response
-    is a plain success -- which is precisely why the UI warns about an
-    unmatched name before submitting."""
+    find a 'Rice' lot. Nothing is deducted and nothing errors -- but the
+    response now names the skip instead of returning a bare success, so a
+    caller can tell the difference between "deducted" and "silently did
+    nothing"."""
     c, _engine = client
     hid = c.post("/api/households", json={"name": "Test HH"}).json()["id"]
     c.post(f"/api/households/{hid}/inventory/capture/confirm",
@@ -176,11 +177,14 @@ def test_a_consumed_name_matching_no_lot_is_silently_ignored(client):
     )
 
     assert response.status_code == 200
+    body = response.json()
+    assert body["deducted"] == []
+    assert body["skipped"][0]["reason"] == "not_in_inventory"
     rice = next(i for i in c.get(f"/api/households/{hid}/inventory").json() if i["ingredient"] == "Rice")
     assert rice["quantity"] == 1000  # untouched: the name did not match
 
 
-def test_consuming_more_than_is_in_stock_floors_at_zero_without_erroring(client):
+def test_consuming_more_than_is_in_stock_floors_at_zero_and_reports_the_shortfall(client):
     c, _engine = client
     hid = c.post("/api/households", json={"name": "Test HH"}).json()["id"]
     c.post(f"/api/households/{hid}/inventory/capture/confirm",
@@ -193,8 +197,69 @@ def test_consuming_more_than_is_in_stock_floors_at_zero_without_erroring(client)
     )
 
     assert response.status_code == 200
+    body = response.json()
+    assert body["skipped"][0]["reason"] == "insufficient_stock"
+    assert body["skipped"][0]["shortfall"] == 4700
     rice = next(i for i in c.get(f"/api/households/{hid}/inventory").json() if i["ingredient"] == "Rice")
-    assert rice["quantity"] == 0  # drained, never negative; the excess is dropped silently
+    assert rice["quantity"] == 0  # drained, never negative
+
+
+def test_a_unit_mismatch_is_refused_by_the_server_even_when_the_client_asks_for_it(client):
+    """The rule has to live where the write happens.
+
+    A recipe asking for 200 g against a lot counted in whole tomatoes used to
+    deduct min(3, 200) and leave the kitchen showing Tomato: 3 -> 0. The
+    client warns about this, but a warning is not a rule -- anyone can skip
+    the page.
+    """
+    c, _engine = client
+    hid = c.post("/api/households", json={"name": "Test HH"}).json()["id"]
+    c.post(f"/api/households/{hid}/inventory/capture/confirm",
+           json={"ingredient": "Tomato", "quantity": 3, "unit": "count", "freshness": "fresh"})
+    loop_id = c.post(f"/api/households/{hid}/loops", json={"trigger_type": "manual"}).json()["id"]
+
+    response = c.post(
+        f"/api/households/{hid}/loops/{loop_id}/outcome",
+        json={"dish_name": "Curry", "consumed": [{"name": "Tomato", "quantity": 200, "unit": "g"}]},
+    )
+
+    assert response.status_code == 200
+    skipped = response.json()["skipped"][0]
+    assert skipped["reason"] == "unit_mismatch"
+    assert skipped["stock_quantity"] == 3
+    assert skipped["stock_unit"] == "count"
+    tomato = next(i for i in c.get(f"/api/households/{hid}/inventory").json() if i["ingredient"] == "Tomato")
+    assert tomato["quantity"] == 3, "nothing may be deducted across incomparable units"
+
+
+def test_a_comparable_unit_deducts_after_converting(client):
+    """The other half of sharing one converter with compute_ingredient_gap: a
+    2 kg lot counts as stock for a recipe asking 400 g, so it must also be
+    deductible for one. Strict string matching would have counted it and then
+    refused to spend it."""
+    c, _engine = client
+    hid = c.post("/api/households", json={"name": "Test HH"}).json()["id"]
+    c.post(f"/api/households/{hid}/inventory/capture/confirm",
+           json={"ingredient": "Rice", "quantity": 2, "unit": "kg", "freshness": "fresh"})
+    loop_id = c.post(f"/api/households/{hid}/loops", json={"trigger_type": "manual"}).json()["id"]
+
+    response = c.post(
+        f"/api/households/{hid}/loops/{loop_id}/outcome",
+        json={"dish_name": "Pulao", "consumed": [{"name": "Rice", "quantity": 400, "unit": "g"}]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["skipped"] == []
+    assert body["deducted"][0] == {
+        "lot_id": body["deducted"][0]["lot_id"],
+        "ingredient": "Rice",
+        "before": 2.0,
+        "after": 1.6,
+        "unit": "kg",
+    }
+    rice = next(i for i in c.get(f"/api/households/{hid}/inventory").json() if i["ingredient"] == "Rice")
+    assert rice["quantity"] == pytest.approx(1.6)
 
 
 def test_outcome_closes_a_loop_even_without_a_prior_confirm_cook(client):

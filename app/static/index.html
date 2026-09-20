@@ -24,9 +24,17 @@
     font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
     padding: 24px 16px 64px;
   }
-  .wrap { max-width: 780px; margin: 0 auto; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
   h1 { font-size: 1.5rem; margin: 0 0 2px; letter-spacing: -0.01em; }
-  .sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 24px; }
+  .sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 20px; }
+  /* Two panes. minmax(0, 1fr) on the right column is load-bearing: without
+     it a long <pre> in the raw-response block widens the grid instead of
+     scrolling inside it. */
+  .cols {
+    display: grid; grid-template-columns: 340px minmax(0, 1fr);
+    gap: 18px; align-items: start;
+  }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
   .panel {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: var(--radius); padding: 18px; margin-bottom: 18px;
@@ -39,21 +47,6 @@
     border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit;
   }
   textarea { resize: vertical; }
-  /* One consumed-ingredient row: name, editable amount, unit, remove. The
-     warning spans the full width beneath so a long message never squeezes
-     the controls. */
-  .crow {
-    display: grid; grid-template-columns: 1fr 96px auto auto;
-    gap: 8px; align-items: center; margin-bottom: 8px;
-  }
-  .crow .cwarn {
-    grid-column: 1 / -1; font-size: 0.8rem; color: var(--warn); margin-top: -2px;
-  }
-  .crow .cunit { color: var(--muted); font-size: 0.85rem; }
-  .crow .cdrop { padding: 6px 10px; line-height: 1; }
-  @media (max-width: 480px) {
-    .crow { grid-template-columns: 1fr 80px auto auto; }
-  }
   .field { flex: 1 1 120px; }
   button {
     font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px;
@@ -68,6 +61,7 @@
   .recipe h2 { margin: 0 0 4px; font-size: 1.25rem; }
   .meta { color: var(--muted); font-size: 0.875rem; margin-bottom: 16px; }
   .sec { margin-top: 18px; }
+  .sec:first-child { margin-top: 0; }
   .sec h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em;
             color: var(--muted); margin: 0 0 8px; font-weight: 600; }
   ul, ol { margin: 0; padding-left: 20px; }
@@ -90,17 +84,40 @@
   details summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
   pre { overflow-x: auto; font-size: 0.75rem; background: var(--bg);
         padding: 10px; border-radius: 8px; border: 1px solid var(--line); }
+
+  /* -- left pane ------------------------------------------------------- */
+  /* The two blocks are titled, not merely coloured: which half of the page
+     is the model's context and which is the reader's dashboard has to
+     survive a screenshot. */
+  .block-title { font-size: 0.95rem; font-weight: 700; margin: 0 0 2px; }
+  .block-why { font-size: 0.78rem; color: var(--muted); margin: 0 0 14px; }
+  .person { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .person:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .person b { font-size: 0.95rem; }
+  .tags { font-size: 0.8rem; color: var(--muted); }
+  .tag-strong { color: var(--err); font-weight: 600; }
+  .signal { font-size: 0.87rem; margin-bottom: 8px; }
+  .signal .when { color: var(--muted); font-size: 0.78rem; }
+  .signal.expired { opacity: 0.55; }
+  .signal.expired s { text-decoration: line-through; }
+  .stock { display: flex; justify-content: space-between; gap: 10px;
+           font-size: 0.87rem; padding: 3px 0; }
+  .stock .q { color: var(--muted); white-space: nowrap; }
+  .stock.changed .q { color: var(--ok); font-weight: 600; }
+  .money { display: flex; justify-content: space-between; font-size: 0.87rem; padding: 2px 0; }
+  .money b { font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <h1>Aaj Kya Banega</h1>
-  <p class="sub">Generate a recipe, then have it read aloud to the cook.</p>
+  <p class="sub">Pick a household, generate a recipe against what is actually in its kitchen, and hear it read to the cook.</p>
 
   <div class="panel">
     <div class="row">
-      <div class="field"><label for="household">Household</label><input id="household" type="number" value="1" min="1" /></div>
-      <div class="field"><label for="servings">Servings</label><input id="servings" type="number" value="2" min="1" max="20" /></div>
+      <div class="field" style="flex:2 1 200px"><label for="household">Household</label>
+        <select id="household"><option value="">loading…</option></select></div>
+      <div class="field"><label for="servings">Servings</label><input id="servings" type="number" value="2" min="1" /></div>
       <div class="field"><label for="guests">Guests</label><input id="guests" type="number" value="0" min="0" max="18" /></div>
       <div class="field"><label for="minutes">Minutes</label><input id="minutes" type="number" value="45" min="1" max="360" /></div>
       <div class="field"><label for="urgency">Urgency</label>
@@ -116,19 +133,29 @@
     </div>
   </div>
 
-  <div id="out"></div>
+  <div class="cols">
+    <aside id="left"></aside>
+    <main id="right"></main>
+  </div>
 </div>
 
 <script>
 (function () {
   "use strict";
   var $ = function (id) { return document.getElementById(id); };
-  var out = $("out"), statusEl = $("status"), goBtn = $("go");
+  var left = $("left"), right = $("right");
+  var statusEl = $("status"), goBtn = $("go"), householdSel = $("household");
 
+  // Remembered per browser only. It never reaches the server except as the
+  // X-API-Key header, and it is a demo credential protecting a demo database.
   try {
     var saved = localStorage.getItem("household-api-key");
     if (saved) { $("apikey").value = saved; }
   } catch (e) { /* private mode: the field just starts empty */ }
+
+  function rememberKey() {
+    try { localStorage.setItem("household-api-key", $("apikey").value.trim()); } catch (e) { /* ignore */ }
+  }
 
   function headers() {
     var h = { "Content-Type": "application/json" };
@@ -159,15 +186,165 @@
     } catch (e) { return "HTTP " + response.status; }
   }
 
+  async function getJSON(path) {
+    var response = await fetch(path, { headers: headers() });
+    if (!response.ok) { throw new Error(await detail(response)); }
+    return response.json();
+  }
+
+  function money(value) {
+    return "₹" + Number(value).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  }
+
+  function list(values, className) {
+    if (!values || !values.length) { return ""; }
+    return '<span class="' + className + '">' + values.map(esc).join(", ") + "</span>";
+  }
+
+  // -- household picker ------------------------------------------------
+  //
+  // Names, not ids. A judge never has to know whether a freshly seeded
+  // database numbered its households 1-3 or 4-6, and a restart that
+  // renumbers them cannot break the page.
+
+  function selectedHousehold() {
+    return householdSel.value ? Number(householdSel.value) : null;
+  }
+
+  async function loadHouseholds() {
+    try {
+      var rows = await getJSON("/api/households");
+    } catch (error) {
+      householdSel.innerHTML = '<option value="">' + esc(error.message) + "</option>";
+      // 401 before a key is typed is expected, not a failure. Retry when one
+      // arrives rather than making the reader reload the page.
+      return;
+    }
+    if (!rows.length) {
+      householdSel.innerHTML = '<option value="">no households seeded</option>';
+      return;
+    }
+    householdSel.innerHTML = rows.map(function (row) {
+      return '<option value="' + esc(row.id) + '">' + esc(row.name) + "</option>";
+    }).join("");
+    refreshLeft();
+  }
+
+  // -- left pane: the household, in two clearly separated halves --------
+
+  async function refreshLeft() {
+    var hid = selectedHousehold();
+    if (hid === null) { left.innerHTML = ""; return; }
+    // Budget and inventory are fetched separately from the context on
+    // purpose: /context is the model's view and deliberately contains no
+    // money and no stock levels. Settled for them here, labelled apart.
+    var results = await Promise.all([
+      getJSON("/api/households/" + hid + "/context").catch(function () { return null; }),
+      getJSON("/api/households/" + hid + "/budget").catch(function () { return null; }),
+      getJSON("/api/households/" + hid + "/inventory").catch(function () { return []; })
+    ]);
+    renderLeft(results[0], results[1], results[2]);
+  }
+
+  function renderLeft(ctx, budget, inventory) {
+    left.innerHTML = contextMarkup(ctx) + dashboardMarkup(budget, inventory);
+  }
+
+  function contextMarkup(ctx) {
+    if (!ctx) { return '<div class="panel"><p class="note">Could not load this household.</p></div>'; }
+    var html = '<div class="panel">';
+    html += '<p class="block-title">What the model was sent</p>';
+    html += '<p class="block-why">Exactly the household memory in the prompt — same code path, so this cannot drift from it.</p>';
+
+    html += '<div class="sec"><h3>Cook</h3>';
+    html += "<p class=\"tags\">" + esc(ctx.cook.name) + " · " + esc(ctx.cook.language) +
+            " · " + esc(ctx.cook.skill_level) + "</p></div>";
+
+    html += '<div class="sec"><h3>Who is eating</h3>';
+    ctx.members.forEach(function (m) {
+      html += '<div class="person"><b>' + esc(m.name) + "</b> ";
+      html += '<span class="tags">' + esc(m.language) + "</span><br />";
+      var bits = [];
+      if (m.health_constraints && m.health_constraints.length) {
+        bits.push(list(m.health_constraints, "tag-strong"));
+      }
+      if (m.allergies && m.allergies.length) {
+        bits.push("allergic to " + list(m.allergies, "tag-strong"));
+      }
+      if (m.dietary_preferences && m.dietary_preferences.length) {
+        bits.push(list(m.dietary_preferences, "tags"));
+      }
+      if (m.dislikes && m.dislikes.length) { bits.push("dislikes " + list(m.dislikes, "tags")); }
+      html += '<span class="tags">' + bits.join(" · ") + "</span></div>";
+    });
+    html += "</div>";
+
+    html += '<div class="sec"><h3>Active preferences</h3>';
+    if (ctx.active_preference_signals.length) {
+      ctx.active_preference_signals.forEach(function (s) {
+        html += '<div class="signal">' + esc(s.signal);
+        if (s.expires_on) { html += ' <span class="when">until ' + esc(s.expires_on) + "</span>"; }
+        else { html += ' <span class="when">standing</span>'; }
+        html += "</div>";
+      });
+    } else {
+      html += '<p class="note">None on file.</p>';
+    }
+    html += "</div>";
+
+    if (ctx.expired_preference_signals.length) {
+      html += '<div class="sec"><h3>Expired</h3>';
+      ctx.expired_preference_signals.forEach(function (s) {
+        html += '<div class="signal expired"><s>' + esc(s.signal) + "</s>" +
+                ' <span class="when">expired ' + esc(s.expires_on) +
+                " — not sent to the model</span></div>";
+      });
+      html += "</div>";
+    }
+    return html + "</div>";
+  }
+
+  function dashboardMarkup(budget, inventory) {
+    var html = '<div class="panel">';
+    html += '<p class="block-title">Reader’s dashboard</p>';
+    html += '<p class="block-why">Not part of the model prompt. Shown so the spend tier and the deductions below are legible.</p>';
+
+    html += '<div class="sec"><h3>Budget this month</h3>';
+    if (budget) {
+      var remaining = Math.max(budget.monthly_limit - budget.spent_amount - budget.planned_amount, 0);
+      html += '<div class="money"><span>Limit</span><b>' + money(budget.monthly_limit) + "</b></div>";
+      html += '<div class="money"><span>Spent</span><b>' + money(budget.spent_amount) + "</b></div>";
+      html += '<div class="money"><span>Planned</span><b>' + money(budget.planned_amount) + "</b></div>";
+      html += '<div class="money"><span>Remaining</span><b>' + money(remaining) + "</b></div>";
+    } else {
+      html += '<p class="note">No budget on file — spend is unconstrained.</p>';
+    }
+    html += "</div>";
+
+    html += '<div class="sec"><h3>In the kitchen</h3><div id="stock">';
+    if (inventory.length) {
+      inventory.forEach(function (lot) {
+        html += '<div class="stock" data-lot="' + esc(lot.id) + '"><span>' + esc(lot.ingredient) +
+                '</span><span class="q">' + esc(lot.quantity) + " " + esc(lot.unit) + "</span></div>";
+      });
+    } else {
+      html += '<p class="note">Empty.</p>';
+    }
+    html += "</div></div>";
+    return html + "</div>";
+  }
+
+  // -- generate --------------------------------------------------------
+
   async function generate() {
+    var hid = selectedHousehold();
+    if (hid === null) { fail("Pick a household first."); return; }
     goBtn.disabled = true;
-    out.innerHTML = "";
+    right.innerHTML = "";
     setStatus("Starting a loop…", true);
-    var hid = Number($("household").value);
     try {
       var loopResponse = await fetch("/api/households/" + hid + "/loops", {
-        method: "POST", headers: headers(),
-        body: JSON.stringify({ trigger_type: "manual" })
+        method: "POST", headers: headers(), body: JSON.stringify({ trigger_type: "manual" })
       });
       if (!loopResponse.ok) { throw new Error(await detail(loopResponse)); }
       var loop = await loopResponse.json();
@@ -179,22 +356,15 @@
         available_minutes: Number($("minutes").value),
         urgency: $("urgency").value
       };
-      var recipeResponse = await fetch(
-        "/api/v2/households/" + hid + "/loops/" + loop.id + "/recipe",
-        { method: "POST", headers: headers(), body: JSON.stringify(body) }
-      );
-      if (!recipeResponse.ok) { throw new Error(await detail(recipeResponse)); }
-      var data = await recipeResponse.json();
+      var response = await fetch("/api/v2/households/" + hid + "/loops/" + loop.id + "/recipe", {
+        method: "POST", headers: headers(), body: JSON.stringify(body)
+      });
+      if (!response.ok) { throw new Error(await detail(response)); }
+      var data = await response.json();
 
-      try { localStorage.setItem("household-api-key", $("apikey").value.trim()); } catch (e) {}
+      rememberKey();
       setStatus("Generated by " + data.generation_provider + ".");
-
-      // The closure panel warns about ingredients that will not deduct
-      // cleanly, and it can only do that by comparing against real lots.
-      // A failure here must not block the recipe, so it degrades to an
-      // empty list and the warnings simply go quiet.
-      var inventory = await loadInventory(hid);
-      render(data, hid, loop.id, inventory);
+      renderRight(data, hid, loop.id);
     } catch (error) {
       fail(error.message || String(error));
     } finally {
@@ -202,29 +372,22 @@
     }
   }
 
-  async function loadInventory(hid) {
-    try {
-      var response = await fetch("/api/households/" + hid + "/inventory", { headers: headers() });
-      if (!response.ok) { return []; }
-      return await response.json();
-    } catch (e) {
-      return [];
-    }
+  // -- right pane ------------------------------------------------------
+  //
+  // Two render roots, not one. The left pane re-renders on its own after a
+  // cook, and it must not be able to destroy the right pane's event
+  // listeners to do it. Within each root the original rule still holds:
+  // build one string, assign it once, then hydrate through SEPARATE
+  // functions, so an early return in one hydrator cannot skip another --
+  // the bug that existed when the audio guard lived inline in render().
+
+  function renderRight(data, hid, loopId) {
+    right.innerHTML = recipeMarkup(data) + cookedPanelMarkup(data);
+    hydrateAudio(data, hid, loopId);
+    hydrateCookedPanel(data, hid, loopId);
   }
 
-  // The backend matches inventory lots by name alone, after strip+lower, and
-  // ignores units entirely (app/api/routes.py::capture_outcome). Mirror that
-  // exactly: a warning that describes what *should* happen rather than what
-  // will happen is worse than no warning.
-  function findLot(inventory, name) {
-    var needle = String(name).trim().toLowerCase();
-    for (var i = 0; i < inventory.length; i++) {
-      if (String(inventory[i].ingredient).trim().toLowerCase() === needle) { return inventory[i]; }
-    }
-    return null;
-  }
-
-  function render(data, hid, loopId, inventory) {
+  function recipeMarkup(data) {
     var r = data.recipe;
     var html = '<div class="panel recipe">';
     html += "<h2>" + esc(r.title) + "</h2>";
@@ -266,20 +429,17 @@
     html += '<div class="sec"><h3>Audio briefing</h3><div id="audio-slot"></div></div>';
     html += '<details class="sec"><summary>Raw response</summary><pre>' +
             esc(JSON.stringify(data, null, 2)) + "</pre></details>";
-    html += "</div>";
-    html += cookedPanelMarkup(data, inventory);
-    out.innerHTML = html;
-
-    hydrateAudio(data, hid, loopId);
-    hydrateCookedPanel(data, hid, loopId, inventory);
+    return html + "</div>";
   }
 
   function hydrateAudio(data, hid, loopId) {
     var slot = $("audio-slot");
+    if (!slot) { return; }
     if (!data.audio_id) {
-      // Deliberately not an early return out of render(): this used to bail
-      // before anything below it was wired up, so a household whose cook
-      // language has no configured voice silently lost the rest of the page.
+      // Deliberately not an early return out of renderRight(): this used to
+      // bail before anything below it was wired up, so a household whose
+      // cook language has no configured voice silently lost the rest of the
+      // page.
       slot.innerHTML = '<p class="note">No voice is configured for this cook’s language, ' +
                        "so this recipe is text only.</p>";
       return;
@@ -293,114 +453,88 @@
     slot.appendChild(button);
     slot.appendChild(note);
 
-    button.addEventListener("click", function () {
+    button.addEventListener("click", async function () {
       button.disabled = true;
-      // Synthesis happens on this request, not when the recipe was
-      // generated, so the wait here is real and has to be visible.
-      note.innerHTML = '<span class="spinner"></span> Writing the briefing and synthesizing speech…';
-      fetch("/api/v2/households/" + hid + "/loops/" + loopId + "/recipe-audio/" + data.audio_id,
-            { headers: headers() })
-        .then(async function (response) {
-          if (!response.ok) { throw new Error(await detail(response)); }
-          return response.blob();
-        })
-        .then(function (blob) {
-          note.textContent = "";
-          var player = document.createElement("audio");
-          player.controls = true;
-          player.src = URL.createObjectURL(blob);
-          slot.replaceChild(player, button);
-          player.play().catch(function () { /* autoplay blocked: controls are there */ });
-        })
-        .catch(function (error) {
-          button.disabled = false;
-          note.innerHTML = '<span class="err">' + esc(error.message) +
-                           "</span><br />The recipe above is unchanged — text is always available.";
-        });
-    });
-  }
-
-  // -- "I cooked this": the half of the loop the UI never had ---------------
-  //
-  // Generating a recipe is read-only. Nothing moves stock, nothing writes
-  // history, and the loop sits at `planned` until the unclosed sweep flags
-  // it. POST /outcome does all of that in one call; this is its first client.
-
-  function cookedPanelMarkup(data, inventory) {
-    var rows = "";
-    data.recipe.ingredients.forEach(function (item, index) {
-      var lot = findLot(inventory, item.ingredient);
-      var warning = "";
-      if (lot === null) {
-        warning = "not in inventory — nothing will be deducted";
-      } else if (String(lot.unit).trim().toLowerCase() !== String(item.unit).trim().toLowerCase()) {
-        warning = "lot is in " + esc(lot.unit) + " — check the amount before submitting";
-      } else if (Number(lot.quantity) < Number(item.quantity)) {
-        warning = "only " + esc(lot.quantity) + " " + esc(lot.unit) + " in stock";
+      note.innerHTML = '<span class="spinner"></span> Rewriting and synthesising…';
+      try {
+        var response = await fetch(
+          "/api/v2/households/" + hid + "/loops/" + loopId + "/recipe-audio/" + data.audio_id,
+          { headers: headers() }
+        );
+        if (!response.ok) { throw new Error(await detail(response)); }
+        var blob = await response.blob();
+        var player = document.createElement("audio");
+        player.controls = true;
+        player.src = URL.createObjectURL(blob);
+        slot.replaceChild(player, button);
+        note.textContent = "";
+        player.play().catch(function () { /* autoplay blocked; controls are there */ });
+      } catch (error) {
+        button.disabled = false;
+        note.innerHTML = '<span class="err">' + esc(error.message) +
+                         "</span><br />The recipe above is unchanged — text is always available.";
       }
-      rows +=
-        '<div class="crow" data-row="' + index + '">' +
-        '<span class="cname">' + esc(item.ingredient) + "</span>" +
-        '<input class="cqty" type="number" step="any" min="0" value="' + esc(item.quantity) + '" />' +
-        '<span class="cunit">' + esc(item.unit) + "</span>" +
-        '<button type="button" class="ghost cdrop" title="Remove this row">×</button>' +
-        (warning ? '<span class="cwarn">⚠ ' + warning + "</span>" : "") +
-        "</div>";
     });
-
-    return (
-      '<div class="panel" id="cooked-panel">' +
-      "<h2>I cooked this</h2>" +
-      '<p class="sub" style="margin-bottom:16px">Closing the loop writes history and takes ' +
-      "the ingredients out of the kitchen.</p>" +
-      '<div class="row">' +
-      '<div class="field" style="flex:2 1 220px"><label for="ck-dish">Dish</label>' +
-      '<input id="ck-dish" type="text" value="' + esc(data.recipe.title) + '" /></div>' +
-      '<div class="field"><label for="ck-rating">Rating</label><select id="ck-rating">' +
-      '<option value="">—</option><option>1</option><option>2</option><option>3</option>' +
-      "<option>4</option><option selected>5</option></select></div>" +
-      '<div class="field"><label for="ck-left">Leftover portions</label>' +
-      '<input id="ck-left" type="number" min="0" step="any" value="0" /></div>' +
-      "</div>" +
-      '<div class="row" style="margin-top:12px"><div class="field" style="flex:1 1 100%">' +
-      '<label for="ck-feedback">How did it go?</label>' +
-      '<textarea id="ck-feedback" rows="2" placeholder="optional"></textarea></div></div>' +
-      '<p style="margin:14px 0 0"><label style="text-transform:none;letter-spacing:0;font-size:0.9rem">' +
-      '<input id="ck-mishap" type="checkbox" style="width:auto;margin-right:8px" />' +
-      "Something went wrong (records it as not accepted)</label></p>" +
-      '<div class="sec"><h3>Used from the kitchen</h3>' + (rows || '<p class="note">Nothing to deduct.</p>') +
-      "</div>" +
-      '<div class="actions"><button id="ck-submit">Close the loop</button>' +
-      '<span id="ck-note" class="note"></span></div>' +
-      "</div>"
-    );
   }
 
-  function hydrateCookedPanel(data, hid, loopId, inventory) {
+  // -- "I cooked this" -------------------------------------------------
+  //
+  // The quantities are the recipe's own. There is nothing to edit here: the
+  // agent knows what it asked for, and the server decides what can actually
+  // be deducted -- it refuses to deduct across units it cannot convert and
+  // reports the mismatch instead of guessing.
+
+  function cookedPanelMarkup(data) {
+    var html = '<div class="panel" id="cooked-panel">';
+    html += "<h2>I cooked this</h2>";
+    html += '<p class="sub" style="margin-bottom:16px">Closes the loop: writes it to history and takes the ingredients out of the kitchen.</p>';
+
+    html += '<div class="sec"><h3>Will come out of the kitchen</h3><ul>';
+    data.recipe.ingredients.forEach(function (i) {
+      html += "<li>" + esc(i.quantity) + " " + esc(i.unit) + " " + esc(i.ingredient) + "</li>";
+    });
+    html += "</ul></div>";
+
+    // Defaulted and folded away, so the primary path is one button. <details>
+    // keeps its contents in the DOM when closed, so these read fine unopened.
+    html += '<details class="sec"><summary>Add detail</summary>';
+    html += '<div class="row" style="margin-top:12px">';
+    html += '<div class="field" style="flex:2 1 220px"><label for="ck-dish">Dish</label>' +
+            '<input id="ck-dish" type="text" value="' + esc(data.recipe.title) + '" /></div>';
+    html += '<div class="field"><label for="ck-rating">Rating</label><select id="ck-rating">' +
+            '<option value="">—</option><option>1</option><option>2</option><option>3</option>' +
+            "<option>4</option><option selected>5</option></select></div>";
+    html += '<div class="field"><label for="ck-left">Leftover portions</label>' +
+            '<input id="ck-left" type="number" min="0" step="any" value="0" /></div>';
+    html += "</div>";
+    html += '<div class="row" style="margin-top:12px"><div class="field" style="flex:1 1 100%">' +
+            '<label for="ck-feedback">How did it go?</label>' +
+            '<textarea id="ck-feedback" rows="2" placeholder="optional"></textarea></div></div>';
+    html += '<p style="margin:14px 0 0"><label style="text-transform:none;letter-spacing:0;font-size:0.9rem">' +
+            '<input id="ck-mishap" type="checkbox" style="width:auto;margin-right:8px" />' +
+            "Something went wrong (records it as not accepted)</label></p>";
+    html += "</details>";
+
+    html += '<div class="actions"><button id="ck-submit">I cooked this</button>' +
+            '<span id="ck-note" class="note"></span></div>';
+    return html + "</div>";
+  }
+
+  function hydrateCookedPanel(data, hid, loopId) {
     var panel = $("cooked-panel");
     if (!panel) { return; }
     var submit = $("ck-submit");
     var note = $("ck-note");
 
-    panel.querySelectorAll(".cdrop").forEach(function (button) {
-      button.addEventListener("click", function () {
-        button.closest(".crow").remove();
-      });
-    });
-
     submit.addEventListener("click", async function () {
-      var consumed = [];
-      panel.querySelectorAll(".crow").forEach(function (row) {
-        var quantity = Number(row.querySelector(".cqty").value);
-        // ConsumedItem.quantity is gt=0, so a blank or zero row would 422 the
-        // whole submission. Drop them here instead.
-        if (!(quantity > 0)) { return; }
-        consumed.push({
-          name: row.querySelector(".cname").textContent,
-          quantity: quantity,
-          unit: row.querySelector(".cunit").textContent
+      // ConsumedItem.quantity is gt=0, so a zero row would 422 the whole
+      // submission. Recipes should not contain one, but the filter costs
+      // nothing and the failure would be total.
+      var consumed = data.recipe.ingredients
+        .filter(function (i) { return Number(i.quantity) > 0; })
+        .map(function (i) {
+          return { name: i.ingredient, quantity: Number(i.quantity), unit: i.unit };
         });
-      });
 
       var rating = $("ck-rating").value;
       var payload = {
@@ -420,13 +554,15 @@
           method: "POST", headers: headers(), body: JSON.stringify(payload)
         });
         if (!response.ok) { throw new Error(await detail(response)); }
+        var body = await response.json();
 
         // capture_outcome does not validate loop state, so a second submit
         // would write a duplicate history row and a second audit event.
         // Staying disabled is the only thing preventing that.
         submit.textContent = "Loop closed";
         note.textContent = "";
-        showDeductions(panel, inventory, await loadInventory(hid));
+        showDeductions(panel, body.deducted, body.skipped);
+        refreshLeft();
       } catch (error) {
         submit.disabled = false;
         note.innerHTML = '<span class="err">' + esc(error.message) +
@@ -435,27 +571,51 @@
     });
   }
 
-  function showDeductions(panel, before, after) {
-    var lines = [];
-    after.forEach(function (lot) {
-      for (var i = 0; i < before.length; i++) {
-        if (before[i].id === lot.id && before[i].quantity !== lot.quantity) {
-          lines.push(esc(lot.ingredient) + ": " + esc(before[i].quantity) + " → " +
-                     esc(lot.quantity) + " " + esc(lot.unit));
-        }
-      }
-    });
+  function showDeductions(panel, deducted, skipped) {
+    // Rendered from the server's own answer rather than by diffing two
+    // inventory snapshots. The server is the authority on what it deducted,
+    // and re-fetching to diff would race the demo reseed job.
     var block = document.createElement("div");
     block.className = "sec";
-    block.innerHTML =
-      "<h3>Kitchen updated</h3>" +
-      (lines.length
-        ? '<div class="missing">' + lines.join("<br />") + "</div>"
-        : '<p class="note">No lot changed — none of the names matched inventory.</p>');
+    var html = "<h3>Kitchen updated</h3>";
+
+    if (deducted.length) {
+      html += '<div class="missing">' + deducted.map(function (d) {
+        return esc(d.ingredient) + ": " + esc(d.before) + " → " + esc(d.after) + " " + esc(d.unit);
+      }).join("<br />") + "</div>";
+    } else {
+      html += '<p class="note">Nothing was deducted.</p>';
+    }
+
+    if (skipped.length) {
+      html += '<p class="note" style="margin-top:10px">' + skipped.map(function (s) {
+        if (s.reason === "unit_mismatch") {
+          return esc(s.ingredient) + " — " + esc(s.stock_quantity) + " " + esc(s.stock_unit) +
+                 " in stock, recipe asks " + esc(s.requested_quantity) + " " + esc(s.requested_unit) +
+                 " (not deducted: units don’t match)";
+        }
+        if (s.reason === "insufficient_stock") {
+          return esc(s.ingredient) + " — ran out, " + esc(s.shortfall) + " " +
+                 esc(s.requested_unit) + " short";
+        }
+        return esc(s.ingredient) + " — not in inventory, nothing deducted";
+      }).join("<br />") + "</p>";
+    }
+
+    block.innerHTML = html;
     panel.appendChild(block);
   }
 
   goBtn.addEventListener("click", generate);
+  householdSel.addEventListener("change", function () { right.innerHTML = ""; refreshLeft(); });
+  // A 401 before a key is typed is the expected first state on a deployed
+  // instance, so the picker retries itself instead of demanding a reload.
+  $("apikey").addEventListener("change", function () {
+    rememberKey();
+    if (!selectedHousehold()) { loadHouseholds(); } else { refreshLeft(); }
+  });
+
+  loadHouseholds();
 })();
 </script>
 </body>

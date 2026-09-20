@@ -49,6 +49,7 @@ from app.providers.voice import VoiceSynthesisUnavailable, join_audio
 from app.repositories import Repository
 from app.schemas import (
     ApprovalDecision,
+    ConsumedItem,
     LoopStart,
     OutcomeCapture,
     PlanRequest,
@@ -64,6 +65,7 @@ from app.services import (
     classify_order_tier,
     compute_ingredient_gap,
     consolidate_orders,
+    convert_quantity,
     remaining_budget,
 )
 
@@ -127,7 +129,24 @@ def _classify_tier(container: Container, amount_inr: float, budget: Budget | Non
     )
 
 
-def _record_approval_if_needed(
+def _latest_approval(session: Session, household_id: int, loop_id: int) -> ApprovalRequest | None:
+    """The most recent approval request for a loop, or None.
+
+    One definition, used both when recording a plan and when authorising an
+    execution, so the row the gate checks is always the row the planner wrote.
+    """
+    rows = list(
+        session.exec(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.meal_loop_id == loop_id)
+            .where(ApprovalRequest.household_id == household_id)
+            .order_by(ApprovalRequest.created_at.desc())
+        )
+    )
+    return rows[0] if rows else None
+
+
+def _record_plan_outcome(
     session: Session,
     loop_repo: Repository,
     loop: MealLoopRecord,
@@ -136,25 +155,61 @@ def _record_approval_if_needed(
     loop_id: int,
     tier: SpendTier,
     amount_inr: float,
+    provider_name: str | None,
     action: str,
     reason: str,
 ) -> ApprovalRequest | None:
-    """Ticket #12: anything above green with real money attached parks the
-    loop in AWAITING_APPROVAL and records what is being asked for. Returns
-    the created request, or None when the order may proceed unattended."""
+    """Record the priced basket on the loop, and park it for approval when
+    the tier demands one.
+
+    Both /plan and /recipe call this, which is what stops the amount
+    execute-order later derives from differing between the two paths. The
+    quote is written for EVERY tier, including green: an ApprovalRequest is
+    only created above green, so before this the priced basket for a green
+    loop existed nowhere on the server and execution had to be told it by the
+    caller.
+
+    Returns the approval request, or None when the order may proceed
+    unattended.
+    """
+    loop_repo.update(
+        loop,
+        {
+            "quoted_amount_inr": amount_inr,
+            "quoted_tier": tier,
+            "quoted_provider": provider_name,
+            "quoted_at": datetime.now(UTC),
+            "status": LoopStatus.PLANNED,
+        },
+    )
     if not approval_required(tier) or amount_inr <= 0:
         return None
-    approval_request = Repository(ApprovalRequest, session).create(
-        ApprovalRequest(
-            household_id=household_id,
-            meal_loop_id=loop_id,
-            tier=tier,
-            action=action,
-            amount_inr=amount_inr,
-            reason=reason,
-            status=ApprovalStatus.PENDING,
+
+    approval_repo = Repository(ApprovalRequest, session)
+    existing = _latest_approval(session, household_id, loop_id)
+    if existing is not None:
+        # Re-planning a loop must not pile up duplicate requests. Update what
+        # is being asked for, but never touch `status` or
+        # `approved_amount_inr`: those are the human's decision and the
+        # basket snapshot check_execution_authorized compares against. An
+        # already-approved request whose amount_inr moves is precisely the
+        # stale-approval case, and it has to stay visible rather than being
+        # replaced by a fresh PENDING row that reports a different reason.
+        approval_request = approval_repo.update(
+            existing, {"tier": tier, "amount_inr": amount_inr, "action": action, "reason": reason}
         )
-    )
+    else:
+        approval_request = approval_repo.create(
+            ApprovalRequest(
+                household_id=household_id,
+                meal_loop_id=loop_id,
+                tier=tier,
+                action=action,
+                amount_inr=amount_inr,
+                reason=reason,
+                status=ApprovalStatus.PENDING,
+            )
+        )
     loop_repo.update(loop, {"status": LoopStatus.AWAITING_APPROVAL})
     return approval_request
 
@@ -232,8 +287,7 @@ def plan_loop(household_id: int, loop_id: int, payload: PlanRequest, session: Se
     is_routine = bool(dish.tags and "routine" in dish.tags) or not gap
     tier, tier_reason = _classify_tier(container, amount, budget, is_routine=is_routine)
 
-    loop_repo.update(loop, {"status": LoopStatus.PLANNED})
-    approval_request = _record_approval_if_needed(
+    approval_request = _record_plan_outcome(
         session,
         loop_repo,
         loop,
@@ -241,6 +295,7 @@ def plan_loop(household_id: int, loop_id: int, payload: PlanRequest, session: Se
         loop_id=loop_id,
         tier=tier,
         amount_inr=amount,
+        provider_name=chosen_quote.provider_name if chosen_quote else None,
         action=f"order for {dish.name}",
         reason=tier_reason,
     )
@@ -373,8 +428,7 @@ def generate_recipe(
 
     # Nothing is written until both model and deterministic feasibility checks
     # have succeeded. Generated recipe text and the raw prompt remain in RAM.
-    loop_repo.update(loop, {"status": LoopStatus.PLANNED})
-    approval_request = _record_approval_if_needed(
+    approval_request = _record_plan_outcome(
         session,
         loop_repo,
         loop,
@@ -382,6 +436,7 @@ def generate_recipe(
         loop_id=loop_id,
         tier=tier,
         amount_inr=amount,
+        provider_name=chosen_quote.provider_name if chosen_quote else None,
         action=f"order for {assessment.recipe.title}",
         reason=tier_reason,
     )
@@ -460,21 +515,34 @@ def decide_approval(household_id: int, approval_id: int, payload: ApprovalDecisi
 
 
 @router.post("/households/{household_id}/loops/{loop_id}/execute-order")
-def execute_order(household_id: int, loop_id: int, amount_inr: float, tier: SpendTier, session: Session = Depends(get_db_session)):
+def execute_order(household_id: int, loop_id: int, session: Session = Depends(get_db_session)):
     """Ticket #12's execution-time gate, wired to Ticket #18's mock
     payment authorizer through the registry (Ticket #5) -- never called
-    directly. This is the endpoint the stale-approval test exercises."""
+    directly. This is the endpoint the stale-approval test exercises.
+
+    Takes NO amount and NO tier from the caller. Both used to be query
+    parameters, which meant the gate was checking figures the caller had
+    chosen: `?amount_inr=2000&tier=green` made check_execution_authorized
+    return early on "green tier executes without approval" without ever
+    looking for an approval row. Both now come from the priced basket that
+    /plan or /recipe recorded on the loop, and the budget check is computed
+    rather than hardcoded True.
+    """
+    loop = Repository(MealLoopRecord, session).get_for_household(loop_id, household_id)
+    if loop.quoted_amount_inr is None or loop.quoted_tier is None:
+        # Refusing is the only safe reading. Defaulting a missing basket to
+        # zero would make an unplanned loop look like a free order and
+        # execute it unattended.
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This loop has no priced basket. Run /plan or /recipe before executing an order.",
+        )
+    amount_inr = loop.quoted_amount_inr
+    tier = loop.quoted_tier
+
     approval = None
     if tier != SpendTier.GREEN:
-        rows = list(
-            session.exec(
-                select(ApprovalRequest)
-                .where(ApprovalRequest.meal_loop_id == loop_id)
-                .where(ApprovalRequest.household_id == household_id)
-                .order_by(ApprovalRequest.created_at.desc())
-            )
-        )
-        approval = rows[0] if rows else None
+        approval = _latest_approval(session, household_id, loop_id)
 
     authorized, reason = check_execution_authorized(approval, tier, amount_inr)
     if not authorized:
@@ -486,11 +554,26 @@ def execute_order(household_id: int, loop_id: int, amount_inr: float, tier: Spen
     pinelabs_rows = list(session.exec(select(PineLabsConnection).where(PineLabsConnection.household_id == household_id)))
     connection = pinelabs_rows[0] if pinelabs_rows else None
 
+    budget_rows = Repository(Budget, session).list_for_household(household_id)
+    remaining = remaining_budget(budget_rows[0] if budget_rows else None)
+    # None means "no budget on file", which classify_order_tier already treats
+    # as unconstrained rather than as zero. Match it, or the gate and the
+    # classifier disagree about the same household.
+    budget_check_passed = remaining is None or amount_inr <= remaining
+
     try:
         result = container.registry.invoke(
             ToolKind.PAYMENTS,
             "authorize",
-            {"tier": tier, "budget_check_passed": True},
+            {
+                "tier": tier,
+                "budget_check_passed": budget_check_passed,
+                # Only ever true when check_execution_authorized above
+                # validated an APPROVED request whose recorded amount still
+                # matches this basket. The deterministic route layer asserts
+                # it; a model never builds this context.
+                "human_approval_verified": authorized and approval_required(tier),
+            },
             connection,
             amount_inr,
             tier,
@@ -701,6 +784,107 @@ def confirm_cook(household_id: int, loop_id: int, session: Session = Depends(get
     return repo.update(loop, {"cook_confirmed": True, "status": LoopStatus.COOKING})
 
 
+def _deduct_consumed(
+    session: Session,
+    lots: list[InventoryLot],
+    consumed: list[ConsumedItem],
+) -> tuple[list[dict], list[dict]]:
+    """Take what was cooked out of the kitchen, and report what happened.
+
+    Enforced here rather than in the client. A browser can warn before
+    submitting -- and does -- but a warning is not a rule: the rule has to
+    live where the write happens, or the only thing standing between a
+    mismatched unit and a corrupted stock level is a page that anyone can
+    skip.
+
+    Units are compared through app.services.convert_quantity, the same
+    converter compute_ingredient_gap uses to decide whether a lot counts as
+    stock. Sharing it is what stops the kitchen claiming a 2 kg rice lot
+    covers a 400 g recipe and then refusing to deduct from it. Where the
+    units genuinely are not comparable -- 200 g against a count of tomatoes
+    -- nothing is deducted and the mismatch is reported, because guessing
+    writes a silently wrong number and a wrong stock level is worse than an
+    unrecorded one.
+
+    Returns (deducted, skipped), both JSON-ready.
+    """
+    deducted: list[dict] = []
+    skipped: list[dict] = []
+
+    for item in consumed:
+        name = item.name.strip().lower()
+        by_name = [lot for lot in lots if lot.ingredient.strip().lower() == name]
+        if not by_name:
+            skipped.append(
+                {
+                    "ingredient": item.name,
+                    "requested_quantity": item.quantity,
+                    "requested_unit": item.unit,
+                    "stock_quantity": None,
+                    "stock_unit": None,
+                    "reason": "not_in_inventory",
+                }
+            )
+            continue
+
+        usable = [lot for lot in by_name if convert_quantity(1.0, item.unit, lot.unit) is not None]
+        if not usable:
+            skipped.append(
+                {
+                    "ingredient": item.name,
+                    "requested_quantity": item.quantity,
+                    "requested_unit": item.unit,
+                    "stock_quantity": by_name[0].quantity,
+                    "stock_unit": by_name[0].unit,
+                    "reason": "unit_mismatch",
+                }
+            )
+            continue
+
+        outstanding = item.quantity  # carried in the recipe's unit throughout
+        for lot in usable:
+            if outstanding <= 1e-9:
+                break
+            # Both directions are needed: the lot's stock expressed in the
+            # recipe's unit to decide how much it can cover, and the amount
+            # taken expressed back in the lot's unit to write it down.
+            lot_stock_in_item_unit = convert_quantity(lot.quantity, lot.unit, item.unit)
+            take_in_item_unit = min(lot_stock_in_item_unit, outstanding)
+            take_in_lot_unit = convert_quantity(take_in_item_unit, item.unit, lot.unit)
+
+            before = lot.quantity
+            lot.quantity = max(before - take_in_lot_unit, 0.0)
+            outstanding -= take_in_item_unit
+            session.add(lot)
+            deducted.append(
+                {
+                    "lot_id": lot.id,
+                    "ingredient": lot.ingredient,
+                    "before": round(before, 4),
+                    "after": round(lot.quantity, 4),
+                    "unit": lot.unit,
+                }
+            )
+
+        if outstanding > 1e-9:
+            # The lots were drained to zero and the recipe still wanted more.
+            # Reported rather than silently floored, so the kitchen's story
+            # and the cook's do not quietly diverge.
+            skipped.append(
+                {
+                    "ingredient": item.name,
+                    "requested_quantity": item.quantity,
+                    "requested_unit": item.unit,
+                    "stock_quantity": 0.0,
+                    "stock_unit": usable[0].unit,
+                    "reason": "insufficient_stock",
+                    "shortfall": round(outstanding, 4),
+                }
+            )
+
+    return deducted, skipped
+
+
 @router.post("/households/{household_id}/loops/{loop_id}/outcome")
 def capture_outcome(household_id: int, loop_id: int, payload: OutcomeCapture, session: Session = Depends(get_db_session)):
     """Ticket #28's happy path: both cook_confirmed and eater feedback
@@ -728,21 +912,9 @@ def capture_outcome(household_id: int, loop_id: int, payload: OutcomeCapture, se
             )
         )
 
-        inventory_repo = Repository(InventoryLot, session)
-        for item in payload.consumed:
-            lots = [
-                lot
-                for lot in inventory_repo.list_for_household(household_id)
-                if lot.ingredient.strip().lower() == item.name.strip().lower()
-            ]
-            remaining = item.quantity
-            for lot in lots:
-                if remaining <= 0:
-                    break
-                deduct = min(lot.quantity, remaining)
-                lot.quantity -= deduct
-                remaining -= deduct
-                session.add(lot)
+        # Fetched once, not once per consumed ingredient.
+        lots = Repository(InventoryLot, session).list_for_household(household_id)
+        deducted, skipped = _deduct_consumed(session, lots, payload.consumed)
 
         loop.cook_confirmed = True
         loop.eater_feedback_captured = True
@@ -762,7 +934,7 @@ def capture_outcome(household_id: int, loop_id: int, payload: OutcomeCapture, se
         session.rollback()
         raise
 
-    return {"status": "completed", "loop_id": loop_id}
+    return {"status": "completed", "loop_id": loop_id, "deducted": deducted, "skipped": skipped}
 
 
 @router.get("/households/{household_id}/reflection/weekly")

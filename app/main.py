@@ -16,6 +16,7 @@ from app.database import initialize_database
 from app.core.container import get_container
 from app.core.scheduler import start_scheduler, stop_scheduler
 from app.core.unclosed_sweep import run_unclosed_sweep
+from app.demo_seed import run_demo_seed
 
 logger = logging.getLogger("household_agent")
 
@@ -25,6 +26,17 @@ async def lifespan(_: FastAPI):
     settings = get_settings()
     for warning in settings.startup_warnings():
         logger.warning(warning)
+
+    # Ticket #7's guard, in the one place every start path reaches. run()
+    # below carries the original bind_host check, but run() only executes
+    # under `python -m app.main`; a platform starting this as
+    # `uvicorn app.main:app` imports the module and skips it entirely, which
+    # meant the check protected local development and nothing else. The
+    # lifespan handler re-reads settings on every TestClient entry too, so
+    # unlike a module-scope check this one is actually testable.
+    error = settings.public_deployment_error()
+    if error:
+        raise RuntimeError(error)
 
     initialize_database()
 
@@ -38,6 +50,26 @@ async def lifespan(_: FastAPI):
         )
     except RuntimeError as exc:
         logger.warning("Could not register unclosed-loop sweep: %s", exc)
+
+    if settings.demo_seed_on_startup:
+        # The deployed image ships with no database at all (data/*.db is
+        # gitignored and the container filesystem is ephemeral), so without
+        # this the Space serves an empty household picker.
+        try:
+            for name, action in run_demo_seed():
+                logger.info("demo seed: %s %s", action, name)
+        except Exception:
+            # Demo data failing must never stop the app from booting: the API
+            # and the UI are still correct against an empty database.
+            logger.warning("Demo seeding failed at startup", exc_info=True)
+        try:
+            container.scheduler.register_sweep(
+                "demo-reseed",
+                interval_seconds=settings.demo_reseed_interval_seconds,
+                callback=run_demo_seed,
+            )
+        except RuntimeError as exc:
+            logger.warning("Could not register the demo reseed job: %s", exc)
 
     yield
 
@@ -83,7 +115,12 @@ def run() -> None:
             "Refusing to bind to a non-loopback host with no HOUSEHOLD_API_KEY configured. "
             "Set HOUSEHOLD_API_KEY or bind to 127.0.0.1."
         )
-    uvicorn.run(app, host=host, port=8000)
+    # Redundant with the lifespan check on purpose: this one fails before the
+    # socket is opened, which is the better failure when we control the start.
+    error = settings.public_deployment_error()
+    if error:
+        raise RuntimeError(error)
+    uvicorn.run(app, host=host, port=settings.port)
 
 
 if __name__ == "__main__":

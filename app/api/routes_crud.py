@@ -13,10 +13,18 @@ in app/api/routes.py. Both routers mount under the same /api prefix.
 """
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlmodel import Session, select
 
 from app.api.deps import get_db_session, require_api_key
+from app.core.household_context import (
+    cook_context,
+    member_context,
+    partition_preference_signals,
+)
+from app.core.state_store import LocalStateStore
 from app.models import (
     Budget,
     CookProfile,
@@ -37,6 +45,7 @@ from app.schemas import (
     DishCreate,
     HistoryCreate,
     HouseholdCreate,
+    HouseholdSummary,
     HouseholdUpdate,
     InventoryCreate,
     InventoryUpdate,
@@ -59,6 +68,27 @@ def create_household(payload: HouseholdCreate, session: Session = Depends(get_db
     return repo.create(Household(**payload.model_dump()))
 
 
+@router.get("/households")
+def list_households(session: Session = Depends(get_db_session)) -> list[HouseholdSummary]:
+    """The one deliberate cross-household read in the system, and the
+    narrowest possible one: id and name, nothing else.
+
+    It exists so the demo UI can offer a household picker instead of making
+    someone guess integer ids -- which also means the UI stops caring whether
+    a freshly seeded database numbered its households 1-3 or 4-6.
+
+    Written as a standalone select rather than a Repository method on
+    purpose. Household has no household_id column, so every household-scoped
+    Repository helper raises NotHouseholdScoped against it, and adding an
+    unscoped list() to Repository would hand a cross-household read path to
+    every other model as a side effect. Returning a projection rather than
+    list[Household] is the other half of the narrowing: default_language and
+    created_at stay unexposed.
+    """
+    rows = session.exec(select(Household.id, Household.name).order_by(Household.name)).all()
+    return [HouseholdSummary(id=row.id, name=row.name) for row in rows]
+
+
 @router.get("/households/{household_id}")
 def get_household(household_id: int, session: Session = Depends(get_db_session)) -> Household:
     return Repository(Household, session).get(household_id)
@@ -68,6 +98,43 @@ def get_household(household_id: int, session: Session = Depends(get_db_session))
 def update_household(household_id: int, payload: HouseholdUpdate, session: Session = Depends(get_db_session)) -> Household:
     repo = Repository(Household, session)
     return repo.update(repo.get(household_id), payload.model_dump())
+
+
+@router.get("/households/{household_id}/context")
+def get_household_context(household_id: int, session: Session = Depends(get_db_session)) -> dict:
+    """What the model is told about this household, from the same code that
+    tells it.
+
+    `active_preference_signals` is byte-identical to the list the planner puts
+    in its prompt, because both come from
+    app.core.household_context.partition_preference_signals. Reconstructing it
+    here would let the page claim the system considered something it did not.
+
+    `expired_preference_signals` is what the planner dropped. It is returned
+    rather than hidden so a reader can see the difference between what the
+    household has said and what the system is currently acting on -- an agent
+    managing its own memory, rather than replaying every note it ever took.
+
+    No budget and no inventory: those are a separate concern with their own
+    endpoints, and conflating them is the mistake this endpoint exists to
+    prevent.
+    """
+    household = Repository(Household, session).get(household_id)
+    # LocalStateStore rather than hand-rolled queries, so this endpoint and
+    # the planner are guaranteed to be reading the same rows.
+    state = LocalStateStore(session).get_household_state(household_id)
+    active, expired = partition_preference_signals(state.preference_signals, date.today())
+    return {
+        "household": {
+            "id": household.id,
+            "name": household.name,
+            "default_language": household.default_language,
+        },
+        "members": member_context(state.members),
+        "cook": cook_context(state.cook_profile),
+        "active_preference_signals": active,
+        "expired_preference_signals": expired,
+    }
 
 
 @router.post("/households/{household_id}/members", status_code=201)

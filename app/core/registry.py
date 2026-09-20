@@ -122,13 +122,32 @@ class ToolRegistry:
         return True, ""
 
     def _gate_payments(self, context: dict[str, Any], method: str) -> tuple[bool, str]:
+        """Green tier pays unattended; above it, a verified human decision is
+        required before money moves.
+
+        The budget check comes first deliberately: it applies at every tier,
+        and an approval does not buy the right to exceed the budget.
+
+        `human_approval_verified` is asserted only by the deterministic route
+        layer, and only after check_execution_authorized has confirmed an
+        APPROVED request whose recorded amount still matches the current
+        basket. It is read with .get() so a caller that has not been updated
+        to set it is refused rather than admitted -- this gate fails closed,
+        like every other decision in this system.
+
+        Before this branch existed the gate refused every non-green tier
+        outright, which meant an approved yellow order passed the approval
+        check and was then blocked here: the approval gate had no path to a
+        completed purchase at all.
+        """
         tier = context.get("tier")
-        budget_check_passed = context.get("budget_check_passed")
-        if tier != SpendTier.GREEN:
-            return False, f"payments tool requires tier=green, got {tier!r}"
-        if not budget_check_passed:
+        if not context.get("budget_check_passed"):
             return False, "payments tool requires a passing deterministic budget check"
-        return True, ""
+        if tier == SpendTier.GREEN:
+            return True, ""
+        if context.get("human_approval_verified"):
+            return True, ""
+        return False, f"payments tool requires tier=green or a verified human approval, got {tier!r}"
 
     def _gate_commerce(self, context: dict[str, Any], method: str) -> tuple[bool, str]:
         # Commerce (search/quote) is read-only and low-risk; gated only on

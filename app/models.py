@@ -188,6 +188,19 @@ class MealLoopRecord(SQLModel, table=True):
     eater_feedback_captured: bool = False
     closed_at: datetime | None = None
     unclosed_reason: str | None = Field(default=None, max_length=500)
+    # The priced basket /plan or /recipe last computed for this loop
+    # (Ticket #12, hardened). execute-order derives its amount and tier from
+    # here instead of from client query parameters -- those used to be
+    # caller-supplied, which meant a client could declare tier=green on a
+    # ₹2000 basket and the approval gate would check a number the caller
+    # chose. The amount previously survived only on an ApprovalRequest, which
+    # is created for non-green tiers alone, so a green loop had it nowhere.
+    # Nullable because a loop that has never been planned has no basket;
+    # execute-order refuses in that case rather than defaulting to zero.
+    quoted_amount_inr: float | None = None
+    quoted_tier: SpendTier | None = None
+    quoted_provider: str | None = Field(default=None, max_length=64)
+    quoted_at: datetime | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

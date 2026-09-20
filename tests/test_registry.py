@@ -24,6 +24,12 @@ def _registry():
 
 
 def test_payments_refused_without_green_tier():
+    """Above green with no asserted human approval, the gate still refuses.
+
+    The context here has no `human_approval_verified` key at all, which is
+    the important half: a caller that has not been updated to assert it is
+    refused rather than admitted.
+    """
     r = _registry()
     with pytest.raises(ToolCallRefused):
         r.invoke(
@@ -36,6 +42,67 @@ def test_payments_refused_without_green_tier():
         )
     assert len(r.blocked_calls.entries) == 1
     assert r.blocked_calls.entries[0]["tool"] == "payments"
+
+
+def test_payments_refused_above_green_when_the_approval_flag_is_false():
+    """Explicitly false must read the same as absent."""
+    r = _registry()
+    with pytest.raises(ToolCallRefused, match="verified human approval"):
+        r.invoke(
+            ToolKind.PAYMENTS,
+            "authorize",
+            {
+                "tier": SpendTier.RED,
+                "budget_check_passed": True,
+                "human_approval_verified": False,
+            },
+            household_id=1,
+            amount_inr=2000,
+            tier=SpendTier.RED,
+        )
+
+
+def test_payments_allowed_above_green_with_a_verified_human_approval():
+    """The branch that gives the approval gate somewhere to lead.
+
+    Only the deterministic route layer sets this, and only after
+    check_execution_authorized has confirmed an APPROVED request whose
+    recorded amount still matches the basket in hand.
+    """
+    r = _registry()
+    result = r.invoke(
+        ToolKind.PAYMENTS,
+        "authorize",
+        {
+            "tier": SpendTier.RED,
+            "budget_check_passed": True,
+            "human_approval_verified": True,
+        },
+        household_id=1,
+        amount_inr=2000,
+        tier=SpendTier.RED,
+    )
+    assert result == {"executed": True}
+    assert r.blocked_calls.entries == []
+
+
+def test_a_verified_approval_does_not_buy_the_right_to_break_the_budget():
+    """The budget check is evaluated first on purpose: it applies at every
+    tier, and approving a basket is not the same as raising the limit."""
+    r = _registry()
+    with pytest.raises(ToolCallRefused, match="budget check"):
+        r.invoke(
+            ToolKind.PAYMENTS,
+            "authorize",
+            {
+                "tier": SpendTier.RED,
+                "budget_check_passed": False,
+                "human_approval_verified": True,
+            },
+            household_id=1,
+            amount_inr=2000,
+            tier=SpendTier.RED,
+        )
 
 
 def test_payments_refused_without_budget_check():

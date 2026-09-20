@@ -17,6 +17,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.core.household_context import (
+    cook_context,
+    member_context,
+    partition_preference_signals,
+)
 from app.core.state_store import HouseholdState
 from app.models import Dish, InventoryLot, MealLoopRecord
 from app.schemas import GeneratedRecipe, RecipeGenerationRequest
@@ -239,41 +244,19 @@ class RecipeGenerator:
                 unavailable_inventory.append({"ingredient": lot.ingredient, "reason": freshness.value})
 
         today = now.date()
-        active_signals = [
-            {
-                "member_id": signal.member_id,
-                "signal": signal.signal,
-                "sentiment": signal.sentiment,
-                "context": signal.context,
-                "confidence": signal.confidence,
-                "expires_on": signal.expires_on.isoformat() if signal.expires_on else None,
-            }
-            for signal in state.preference_signals
-            if signal.expires_on is None or signal.expires_on >= today
-        ]
-        cook = state.cook_profile
+        # Built through app/core/household_context.py rather than inline, so
+        # GET /households/{id}/context can show a reader the identical payload
+        # instead of reconstructing it and quietly drifting from what the
+        # model was actually sent. The expired half is discarded here and
+        # surfaced there.
+        active_signals, _expired_signals = partition_preference_signals(
+            state.preference_signals, today
+        )
         return {
             "household_name": state.household.name if state.household else None,
             "household_language": state.household.default_language if state.household else "English",
-            "members": [
-                {
-                    "name": member.name,
-                    "language": member.language,
-                    "dietary_preferences": member.dietary_preferences,
-                    "allergies": member.allergies,
-                    "health_constraints": member.health_constraints,
-                    "likes": member.likes,
-                    "dislikes": member.dislikes,
-                }
-                for member in state.members
-            ],
-            "cook": {
-                "name": cook.name if cook else "Cook",
-                "language": cook.language if cook else "English",
-                "skill_level": cook.skill_level if cook else "intermediate",
-                "available_hours": cook.available_hours if cook else [],
-                "confident_dishes": cook.confident_dishes if cook else [],
-            },
+            "members": member_context(state.members),
+            "cook": cook_context(state.cook_profile),
             "usable_inventory": usable_inventory,
             "unavailable_inventory": unavailable_inventory,
             "leftovers": [

@@ -143,7 +143,22 @@ _MASS_TO_G = {"g": 1.0, "kg": 1000.0}
 _VOLUME_TO_ML = {"ml": 1.0, "l": 1000.0, "tsp": 4.9289, "tbsp": 14.7868, "cup": 236.588}
 
 
-def _convert(quantity: float, from_unit: str, to_unit: str) -> float | None:
+def convert_quantity(quantity: float, from_unit: str, to_unit: str) -> float | None:
+    """Convert within one dimension, or return None when the units are not
+    comparable at all (grams to a count of tomatoes).
+
+    Public because two callers need to agree: `compute_ingredient_gap` uses it
+    to decide whether a lot counts as stock, and `capture_outcome` uses it to
+    decide whether that same lot can be deducted at cook time. When only the
+    first converted, a 2 kg rice lot counted toward a recipe asking for 400 g
+    and then refused to be deducted for it -- the kitchen said a recipe was
+    affordable and then declined to spend from it.
+
+    None is not a failure to be smoothed over. Guessing at a genuine unit
+    mismatch writes a silently wrong stock level, which is the reasoning
+    behind `quantity_unknown` here and behind the deduction being skipped
+    rather than approximated there.
+    """
     from_unit, to_unit = from_unit.strip().lower(), to_unit.strip().lower()
     if from_unit == to_unit:
         return quantity
@@ -194,7 +209,7 @@ def compute_ingredient_gap(
         available = 0.0
         unknown = False
         for qty, unit in stock_by_ingredient.get(name.lower(), []):
-            converted = _convert(qty, unit, required_unit)
+            converted = convert_quantity(qty, unit, required_unit)
             if converted is None:
                 unknown = True
                 continue

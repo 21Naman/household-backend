@@ -21,6 +21,18 @@ class HouseholdUpdate(HouseholdCreate):
     pass
 
 
+class HouseholdSummary(APIModel):
+    """What GET /households returns, and deliberately all it returns.
+
+    A projection rather than the Household row: this is the system's one
+    cross-household read, so it exposes the minimum a picker needs and
+    nothing a caller could mine.
+    """
+
+    id: int
+    name: str
+
+
 class MemberCreate(APIModel):
     name: str = Field(min_length=1, max_length=120)
     language: str = "English"
@@ -241,10 +253,12 @@ class ConsumedItem(APIModel):
     is the shape telling you it does not belong here. Consumption and
     purchase are different events; only one of them has a price.
 
-    `unit` is carried even though app/api/routes.py::capture_outcome matches
-    lots by name alone and never reads it. It is what lets a client warn
-    before submitting that the recipe's unit disagrees with the lot's --
-    without it, a silently wrong deduction has no signal at all.
+    `unit` is load-bearing. app/api/routes.py::capture_outcome compares it
+    against the lot's unit through app.services.convert_quantity and refuses
+    to deduct across units that are not comparable, reporting the mismatch
+    instead. It used to be carried but never read, which meant the only thing
+    standing between "200 g" and a lot counted in whole tomatoes was a
+    client-side warning anyone could skip.
     """
 
     name: str = Field(min_length=1, max_length=200)

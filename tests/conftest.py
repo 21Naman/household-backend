@@ -97,3 +97,55 @@ def api_client_factory(monkeypatch):
             yield pair
 
     return build
+
+
+@pytest.fixture()
+def red_tier_loop(api_client):
+    """A planned loop whose basket genuinely prices into the red tier.
+
+    Shared rather than inlined because the spend-gate tests, the
+    stale-approval test and the payments-gate test all need the identical
+    arrangement, and duplicating the pricing arithmetic across files is how
+    two copies of it drift apart.
+
+    The basket is sized from the settings, not from a literal: the red floor
+    is a named threshold and this fixture has to track it. CommerceMockProvider
+    prices a line at roughly ₹20 per 100 units, so the quantity is derived
+    from the floor rather than guessed at.
+
+    The monthly limit is deliberately generous. A basket that also broke the
+    budget would be refused for two independent reasons at once, and the test
+    could not tell which rule fired.
+
+    Returns (household_id, loop_id, plan_response).
+    """
+    import app.settings as settings_module
+
+    client, _engine = api_client
+    settings = settings_module.get_settings()
+
+    hid = client.post("/api/households", json={"name": "Big Basket Household"}).json()["id"]
+    client.put(
+        f"/api/households/{hid}/budget",
+        json={"monthly_limit": settings.spend_tier_red_floor_inr * 20, "spent_amount": 0, "planned_amount": 0},
+    )
+
+    # ~₹20 per 100 g, so this clears the red floor with margin to spare even
+    # at the low end of the mock's deterministic price variance.
+    quantity = settings.spend_tier_red_floor_inr * 8
+    client.post(
+        "/api/dishes",
+        json={
+            "name": "Saffron Feast",
+            "ingredients": [{"ingredient": "Saffron", "quantity": quantity, "unit": "g"}],
+            "prep_minutes": 20,
+            "servings": 2,
+        },
+    )
+
+    loop_id = client.post(f"/api/households/{hid}/loops", json={"trigger_type": "manual"}).json()["id"]
+    plan = client.post(
+        f"/api/households/{hid}/loops/{loop_id}/plan",
+        json={"servings": 2, "available_minutes": 30},
+    ).json()
+    return hid, loop_id, plan

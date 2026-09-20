@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -201,6 +202,21 @@ class Settings(BaseSettings):
     # -- Auth gate (Ticket #7) ------------------------------------------------
     api_key: str | None = None
     bind_host: str = "127.0.0.1"
+    port: int = Field(default=8000, gt=0, le=65535)
+    # Ticket #7, extended for real deployments. `run()`'s bind_host check only
+    # fires when the process is started as `python -m app.main`; every hosting
+    # platform starts it as `uvicorn app.main:app`, which imports the module
+    # and never calls run(), so the guard silently did not protect a deployed
+    # instance at all. The application cannot observe which socket uvicorn
+    # bound when it is started externally, so the posture is *declared* rather
+    # than detected — see is_public_deployment().
+    public_deployment: bool = False
+
+    # -- Demo data (deployment only) -----------------------------------------
+    # Off by default so neither the test suite nor local development ever gets
+    # a background job rewriting its database.
+    demo_seed_on_startup: bool = False
+    demo_reseed_interval_seconds: int = Field(default=21600, gt=0)  # 6 hours
 
     # -- CORS (moved out of main.py per Ticket #6) ----------------------------
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -223,6 +239,34 @@ class Settings(BaseSettings):
     recipe_min_stocked_ingredient_ratio: float = Field(default=0.60, ge=0, le=1)
     # How often the unclosed-loop sweep runs.
     unclosed_sweep_interval_seconds: int = Field(default=3600, gt=0)
+
+    def is_public_deployment(self) -> bool:
+        """True when this process is reachable from outside localhost.
+
+        Either declared explicitly via HOUSEHOLD_PUBLIC_DEPLOYMENT, or
+        inferred from a platform marker the operator did not have to remember
+        to set: Hugging Face Spaces sets SPACE_ID in every container, so if we
+        are running there we are public whatever the .env says.
+
+        Deliberately not inferred from `bind_host`: under `uvicorn app.main:app
+        --host 0.0.0.0` that setting is never read, and under gunicorn or a
+        programmatic uvicorn.Server there is no supported way to ask what was
+        bound. A guard that silently fails to fire is worse than no guard, so
+        the signal is declared rather than guessed at.
+        """
+        return self.public_deployment or bool(os.environ.get("SPACE_ID"))
+
+    def public_deployment_error(self) -> str | None:
+        """The one refusal this class makes. Everything else in
+        startup_warnings() is a warning, because offline boot must always
+        succeed — but serving a public URL with no credential is not a
+        degraded mode, it is an open database."""
+        if self.is_public_deployment() and not self.api_key:
+            return (
+                "Refusing to serve a public deployment with no HOUSEHOLD_API_KEY configured. "
+                "Set HOUSEHOLD_API_KEY, or unset HOUSEHOLD_PUBLIC_DEPLOYMENT to run loopback-only."
+            )
+        return None
 
     @property
     def database_path(self) -> Path | None:
@@ -249,7 +293,8 @@ class Settings(BaseSettings):
             )
         if not self.api_key:
             warnings.append(
-                "HOUSEHOLD_API_KEY is unset — the API will refuse to bind to a non-loopback host (Ticket #7)."
+                "HOUSEHOLD_API_KEY is unset — the API will refuse to bind to a non-loopback host, "
+                "and will refuse to start at all if HOUSEHOLD_PUBLIC_DEPLOYMENT is set (Ticket #7)."
             )
         active_mocks = [
             name
