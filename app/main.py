@@ -120,7 +120,7 @@ def run() -> None:
     error = settings.public_deployment_error()
     if error:
         raise RuntimeError(error)
-    uvicorn.run(app, host=host, port=settings.port)
+    uvicorn.run(app, host=host, port=settings.resolved_port())
 
 
 if __name__ == "__main__":

@@ -33,14 +33,62 @@ def test_public_deployment_with_a_key_starts(api_client_factory):
         assert client.get("/health").status_code == 200
 
 
-def test_a_platform_marker_implies_a_public_deployment(api_client_factory, monkeypatch):
-    """Hugging Face Spaces sets SPACE_ID in every container. Inferring the
-    posture from it means an operator who forgets the explicit flag still
-    cannot serve an open database."""
-    monkeypatch.setenv("SPACE_ID", "someone/aaj-kya-banega")
+@pytest.mark.parametrize(
+    "marker, value",
+    [
+        ("SPACE_ID", "someone/aaj-kya-banega"),
+        ("RENDER", "srv-abc123"),
+        ("KOYEB_APP_NAME", "aaj-kya-banega"),
+        ("FLY_APP_NAME", "aaj-kya-banega"),
+    ],
+)
+def test_a_platform_marker_implies_a_public_deployment(api_client_factory, monkeypatch, marker, value):
+    """Every host injects something. Inferring the posture from it means an
+    operator who forgets the explicit flag still cannot serve an open
+    database by accident."""
+    monkeypatch.setenv(marker, value)
     with pytest.raises(RuntimeError, match="HOUSEHOLD_API_KEY"):
         with api_client_factory():
             pass
+
+
+# ---------------------------------------------------------------------------
+# Port resolution -- the failure that looks like a broken app but is not
+# ---------------------------------------------------------------------------
+
+def _port(monkeypatch, **env):
+    import app.settings as settings_module
+
+    for key in ("HOUSEHOLD_PORT", "PORT"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    settings_module.get_settings.cache_clear()
+    try:
+        return settings_module.get_settings().resolved_port()
+    finally:
+        settings_module.get_settings.cache_clear()
+
+
+def test_platform_port_is_used_when_no_explicit_port_is_set(monkeypatch):
+    """Render, Koyeb and Cloud Run route to whatever the process binds on
+    $PORT. Ignoring it means the health check never passes and the deploy is
+    marked failed while the application inside runs perfectly."""
+    assert _port(monkeypatch, PORT="10000") == 10000
+
+
+def test_an_explicit_port_overrides_the_platform(monkeypatch):
+    """A deliberate choice is never overridden by the host."""
+    assert _port(monkeypatch, PORT="10000", HOUSEHOLD_PORT="7860") == 7860
+
+
+def test_a_malformed_platform_port_falls_back_to_the_default(monkeypatch):
+    """Better a wrong-but-valid port than a crash at bind time."""
+    assert _port(monkeypatch, PORT="not-a-number") == 8000
+
+
+def test_the_default_port_is_unchanged_locally(monkeypatch):
+    assert _port(monkeypatch) == 8000
 
 
 # ---------------------------------------------------------------------------

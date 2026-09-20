@@ -210,8 +210,9 @@ otherwise would undercut everything else in this document.
 
 ## What changes when this runs in the cloud
 
-The deployed instance is a free Hugging Face Space. Everything below is true
-of that deployment and not of a local run, and none of it is visible from the
+The deployed instance runs on a free container tier (Render; the Dockerfile
+is host-agnostic). Everything below is true of that deployment and not of a
+local run, and none of it is visible from the
 UI, so it is written down here instead.
 
 **Two model legs, not three.** `RoundRobinRecipeProvider` alternates Groq and
@@ -242,11 +243,14 @@ weakening it to avoid an error screen is the kind of shortcut this document
 exists to not take.
 
 **The audio cache, the synthesis counter and the scheduler are all
-per-process, and all restart empty.** A free Space sleeps after roughly 48
-hours idle and is rebuilt on the next request. So: `audio_id`s minted before
-the sleep return 404 after it (with a message saying to generate the recipe
+per-process, and all restart empty.** Render's free tier stops the process
+after about 15 minutes idle and starts it again on the next request, which
+costs roughly a minute of cold start. So: `audio_id`s minted before an idle
+gap return 404 after it (with a message saying to generate the recipe
 again); the Gnani daily synthesis cap resets to zero; and both the
 unclosed-loop sweep and the reseed job restart their intervals from scratch.
+The six-hour unclosed-loop timeout in particular will effectively never
+elapse on that tier, so that behaviour is real but not observable there.
 
 **The Gnani daily cap is per-process, not global.** `ToolRegistry._synthesis_counts`
 is a dictionary in memory. With one worker the cap is real. With more than one

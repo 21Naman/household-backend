@@ -1,13 +1,3 @@
----
-title: Aaj Kya Banega
-emoji: 🍲
-colorFrom: orange
-colorTo: red
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # Household Orchestration Agent — Backend
 
 Built directly against `build-map.md`, phase by phase, ticket by ticket, no
@@ -106,27 +96,32 @@ python scripts/seed_demo_households.py --refresh  # restore existing rows in pla
 
 ## Deploying it
 
-The `Dockerfile` targets a Hugging Face Space on the free CPU tier, chosen
-because a free Space sleeps after ~48h idle rather than ~15 minutes — the
-audio cache, the Gnani synthesis counter and the scheduler all live in
-process memory, and the unclosed-loop sweep needs a loop to have been open
-for six hours before it has anything to say.
+The `Dockerfile` is host-agnostic; `render.yaml` deploys it to Render's free
+tier. (It was written for a Hugging Face Space, but Docker Spaces became a
+paid feature in July 2026.) Nothing in the image pins a port — Render, Koyeb
+and Cloud Run all inject `$PORT`, and `Settings.resolved_port()` reads it
+unless `HOUSEHOLD_PORT` is set deliberately.
 
-Set one Space secret, `HOUSEHOLD_API_KEY`, and give reviewers the value; the
-demo page has a field for it. Everything else the container needs is in the
-Dockerfile. `GROQ_API_KEY` and `GEMINI_API_KEY` are optional but strongly
-wanted: there is no Ollama in the Space, so without them recipe generation
-has no working provider at all.
+Four environment secrets are set in the host's dashboard, never in a tracked
+file: `HOUSEHOLD_API_KEY` (give reviewers the value; the demo page has a
+field for it), plus `HOUSEHOLD_GROQ_API_KEY`, `HOUSEHOLD_GEMINI_API_KEY` and
+`HOUSEHOLD_GNANI_API_KEY`. The model keys are not optional in practice:
+there is no Ollama in the cloud, so without them recipe generation has no
+working provider at all.
 
-**With `HOUSEHOLD_PUBLIC_DEPLOYMENT=true` and no API key the container
-refuses to start.** That is Ticket #7 working, not a misconfiguration — see
+On a free tier the process is stopped when idle, which costs a cold start on
+the first request and empties the audio cache, the synthesis counter and the
+scheduler each time.
+
+**With no API key configured the container refuses to start** (the host's
+own marker is enough to make it treat itself as public). That is Ticket #7 working, not a misconfiguration — see
 `docs/honest-limits.md` for what else differs in the cloud, including that
 the database is ephemeral and the demo data is restored every six hours.
 
 ## Testing
 
 ```bash
-pytest                                          # 118 passed, 3 skipped
+pytest                                          # 242 passed, 3 skipped
 pytest --cov=app --cov-report=term-missing      # coverage breakdown
 RUN_AWS_INTEGRATION_TESTS=1 pytest tests/test_parity.py   # only in an env with real AWS creds
 ```
@@ -137,8 +132,10 @@ RUN_AWS_INTEGRATION_TESTS=1 pytest tests/test_parity.py   # only in an env with 
 fresh, response-only recipe. It alternates Groq and Gemini as its initial
 remote provider, fails over to the other on an operational error, then uses
 the local Ollama model only if both remote providers fail. The existing
-deterministic `/plan` endpoint is unchanged, and Ollama remains the provider
-for cook briefs.
+deterministic `/plan` endpoint is unchanged. Cook briefs go through the same
+chain; when every leg is unreachable they degrade to a templated line and
+report `degraded: true` rather than returning a template that reads like a
+written brief. Note there is no Ollama leg in a cloud deployment.
 
 Copy the Groq and Gemini placeholders from `.env.example` into `.env`. No
 new Python package is required: the adapters use the already-required

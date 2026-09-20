@@ -245,13 +245,36 @@ class Settings(BaseSettings):
     audit_feed_default_limit: int = Field(default=50, gt=0)
     audit_feed_max_limit: int = Field(default=200, gt=0)
 
+    # Platform-injected markers that mean "this process is on a public host".
+    # Inferring from these means an operator who forgets the explicit flag
+    # still cannot serve an open database by accident. Extend the tuple when
+    # deploying somewhere new; getting it wrong only ever costs a false
+    # positive, which fails safe.
+    _PUBLIC_HOST_MARKERS = ("SPACE_ID", "RENDER", "KOYEB_APP_NAME", "FLY_APP_NAME")
+
+    def resolved_port(self) -> int:
+        """The port to bind, preferring an explicit setting over the
+        platform's.
+
+        Render, Koyeb and Cloud Run all inject `$PORT` and route traffic to
+        whatever the process binds there; ignoring it means the health check
+        never passes and the deploy is marked failed with the application
+        itself running perfectly. HOUSEHOLD_PORT still wins when it is set, so
+        a deliberate choice is never overridden by the platform.
+        """
+        if "HOUSEHOLD_PORT" in os.environ:
+            return self.port
+        platform_port = os.environ.get("PORT")
+        if platform_port and platform_port.isdigit():
+            return int(platform_port)
+        return self.port
+
     def is_public_deployment(self) -> bool:
         """True when this process is reachable from outside localhost.
 
         Either declared explicitly via HOUSEHOLD_PUBLIC_DEPLOYMENT, or
-        inferred from a platform marker the operator did not have to remember
-        to set: Hugging Face Spaces sets SPACE_ID in every container, so if we
-        are running there we are public whatever the .env says.
+        inferred from a marker the operator did not have to remember to set --
+        Spaces sets SPACE_ID, Render sets RENDER, and so on.
 
         Deliberately not inferred from `bind_host`: under `uvicorn app.main:app
         --host 0.0.0.0` that setting is never read, and under gunicorn or a
@@ -259,7 +282,9 @@ class Settings(BaseSettings):
         bound. A guard that silently fails to fire is worse than no guard, so
         the signal is declared rather than guessed at.
         """
-        return self.public_deployment or bool(os.environ.get("SPACE_ID"))
+        if self.public_deployment:
+            return True
+        return any(os.environ.get(marker) for marker in self._PUBLIC_HOST_MARKERS)
 
     def public_deployment_error(self) -> str | None:
         """The one refusal this class makes. Everything else in
