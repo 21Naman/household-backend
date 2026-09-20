@@ -17,11 +17,18 @@ per-ticket write-ups the build map asked for.
   account, no credentials, and no network route to AWS. See
   `docs/aws-gate-evidence.md` for exactly what that means and what running
   it live would additionally prove.
-- **Tickets #40 (Pine Labs live) and #41 (Gnani live) are intentionally
-  gated**, not just untested — both raise `NotYetValidated` errors unless
-  explicitly acknowledged, because the build map marks them BLOCKED on
-  open research questions (RQ4/RQ5, RQ7). This is enforced in code, not
-  just documentation.
+- **Ticket #40 (Pine Labs live) is intentionally gated**, not just
+  untested — it raises `NotYetValidated` unless explicitly acknowledged,
+  because the build map marks it BLOCKED on RQ4/RQ5. This is enforced in
+  code, not just documentation.
+- **Ticket #41 (Gnani) is gated on one leg only.** RQ7 asks whether Gnani's
+  noise robustness survives a kitchen via a phone mic — a question about a
+  microphone — so speech-to-**text** still refuses without acknowledgment
+  while text-to-**speech** runs freely. **TTS is verified live** — the
+  request returns 200 with a well-formed MP3, confirmed by
+  `scripts/probe_gnani_tts.py`. STT is not, and the API key in use is
+  TTS-scoped so it cannot be. `docs/honest-limits.md` says exactly which
+  parts of the audio pipeline are tested and which are not.
 
 ## Running it
 
@@ -59,6 +66,45 @@ then deterministically rejects recipes that exceed the time limit, have under
 basket exceeds the remaining budget. One correction request is permitted
 before it returns `422` with the unmet constraints.
 
+## Audio briefing
+
+A successful `/recipe` response carries an opaque `audio_id`. Fetching
+`GET /api/v2/households/{household_id}/loops/{loop_id}/recipe-audio/{audio_id}`
+rewrites the recipe into spoken instructions in the cook's language and
+synthesizes speech, returning playable audio. **Nothing is rewritten or
+synthesized until that fetch happens**, so a cook who never presses play
+costs nothing; the result is then cached in memory (never the database) so
+replays are free.
+
+The briefing is written in **Hinglish** by default — code-mixed Hindi and
+English in Latin script, the way an Indian kitchen actually sounds — using
+Gnani's `hi-en` voice. A cook whose profile language has its own configured
+voice keeps it (English gets `en-IN`); everyone else falls back to Hinglish,
+so every recipe is offered audio.
+
+Quantities are spelled out in words and the text is checked deterministically
+for stray digits or currency symbols before it reaches the speech engine.
+Missing ingredients are spoken; prices, spend tiers and approval state never
+are.
+
+Run `python -m app.main` and open <http://127.0.0.1:8000/> for a demo UI that
+drives the **whole loop** — generate a recipe, read it as cards, press play,
+then "I cooked this" to close it. Closing writes a `DishHistory` row, deducts
+what was used from the kitchen, and moves the loop to `completed` so the
+unclosed sweep stops watching it. The panel warns before submitting when a
+consumed ingredient will not deduct cleanly — the name matches no lot, the
+units disagree, or the amount exceeds stock — because the backend does all
+three silently.
+
+Without Gnani credentials it uses an offline mock that produces a real,
+playable placeholder tone, so the pipeline is demoable with zero
+credentials.
+
+Populate a database to demo against with
+`python scripts/seed_demo_households.py` — three households with members,
+cook profiles, budgets, inventory, preference signals, leftovers and history,
+all dated relative to today.
+
 ## Where each build-map ticket landed
 
 | Ticket | What it is | File(s) |
@@ -88,12 +134,14 @@ before it returns `422` with the unmet constraints.
 | #23 | Structured short-term context | `app/models.py::MealLoopRecord.guest_count/occasion` |
 | #24 | Unclosed-loop detection | `app/core/unclosed_sweep.py`, `tests/test_unclosed_sweep.py` |
 | #25 | Cook reply leg | `app/providers/voice.py` |
+| #25a | Audio briefing (rewrite → TTS → UI) | `app/core/recipe_briefing.py`, `app/core/recipe_audio_cache.py`, `app/providers/voice_mock.py`, `app/static/index.html` |
+| #28a | Loop closure from the UI | `app/static/index.html` ("I cooked this"), `app/schemas.py::ConsumedItem`, `app/api/routes.py::capture_outcome` |
 | #26 | Approval reasons | `app/schemas.py::ApprovalDecision.reason` |
 | #27 | Agent-decision tests over seed scenarios | `app/seed.py`, `tests/test_agent_decisions.py` |
 | #28 | End-to-end loop closure | `tests/test_loop_e2e.py` (includes the mid-crash transaction test) |
 | #29 | Checkpoint: BUILD IT is demoable | all of the above, green |
 | #30 | AWS gate | `docs/aws-gate-evidence.md` |
-| #31 | Secrets Manager | `app/providers/secrets.py` |
+| #31 | Secrets Manager | `infra/cdk/secrets_stack.py` (provisions the secrets). The runtime resolver that originally lived at `app/providers/secrets.py` was removed by a complexity audit — it had no callers and no test coverage; nothing in the app actually read a secret through it. |
 | #32 | DynamoDBStateStore | `app/providers/dynamodb_state.py` |
 | #33 | BedrockModelProvider | `app/providers/bedrock_model.py` |
 | #34 | Lambda tool execution + IAM | `lambdas/handlers.py`, `infra/cdk/tools_stack.py` |
@@ -103,7 +151,7 @@ before it returns `422` with the unmet constraints.
 | #38 | Calendar scope verification | `app/providers/google_calendar.py`, `app/settings.py::google_calendar_scopes` |
 | #39 | Delhivery Maps (live) | `app/providers/logistics_delhivery.py` |
 | #40 | Pine Labs (live, **BLOCKED**) | `app/providers/payments_pinelabs.py` |
-| #41 | Gnani (live, **BLOCKED**) | `app/providers/voice_gnani.py` |
+| #41 | Gnani (TTS live-capable, STT **BLOCKED** on RQ7) | `app/providers/voice_gnani.py` |
 | #42 | CDK infrastructure | `infra/cdk/` (synthesizes cleanly; see `docs/aws-gate-evidence.md`) |
 | #43 | Staging deploy + gate evidence | `docs/aws-gate-evidence.md` |
 | #44 | Demo beats | `docs/demo-script.md` |

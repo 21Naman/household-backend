@@ -8,7 +8,10 @@ triggering spend, and it is why app/core/registry is treated as
 security-relevant — see Ticket #12 for the approval gate this composes with.
 
 Gating rules (Bible §4.3 "Tool-selection logic"):
-  - voice fires only for cook-facing messages
+  - voice fires only for cook-facing messages, and speech synthesis is
+    additionally capped per household per day -- a call that spends vendor
+    credits is spend, and spend goes through this gate like every other
+    kind
   - payments fire only after classify_order_tier returns GREEN AND a
     deterministic budget check passes (checked again at execution time,
     not just at proposal time — see Ticket #12)
@@ -18,7 +21,9 @@ Gating rules (Bible §4.3 "Tool-selection logic"):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from enum import Enum
+from threading import Lock
 from typing import Any, Callable
 
 from app.enums import SpendTier
@@ -56,26 +61,67 @@ class ToolRegistry:
     """Construct once per app, inject providers, call `invoke`. Never call
     a provider directly from a route handler or from app/services.py."""
 
-    def __init__(self) -> None:
+    def __init__(self, daily_synthesis_limit: int | None = None) -> None:
         self._providers: dict[ToolKind, Any] = {}
         self.blocked_calls = BlockedCallLog()
+        self.daily_synthesis_limit = daily_synthesis_limit
+        # (household_id, UTC date) -> count. In-process and therefore
+        # per-worker, exactly like app/core/recipe_audio_cache.py; both move
+        # to a shared store together when this is deployed multi-worker.
+        self._synthesis_counts: dict[tuple[int, date], int] = {}
+        self._counts_lock = Lock()
 
     def register(self, kind: ToolKind, provider: Any) -> None:
         self._providers[kind] = provider
 
     # -- gates -----------------------------------------------------------
 
-    def _gate_voice(self, context: dict[str, Any]) -> tuple[bool, str]:
+    def _gate_voice(self, context: dict[str, Any], method: str) -> tuple[bool, str]:
         if not context.get("cook_facing"):
             return False, "voice tool requested for a non-cook-facing message"
+        if method != "synthesize":
+            return True, ""
+        household_id = context.get("household_id")
+        if not household_id:
+            return False, "speech synthesis requires a household_id in context"
+        if self.daily_synthesis_limit is None:
+            return True, ""
+        used = self._synthesis_count(household_id)
+        if used >= self.daily_synthesis_limit:
+            return False, (
+                f"speech synthesis daily limit reached for this household "
+                f"({used}/{self.daily_synthesis_limit})"
+            )
         return True, ""
 
-    def _gate_logistics(self, context: dict[str, Any]) -> tuple[bool, str]:
+    def _synthesis_count(self, household_id: int) -> int:
+        today = datetime.now(timezone.utc).date()
+        with self._counts_lock:
+            self._prune_counts(today)
+            return self._synthesis_counts.get((household_id, today), 0)
+
+    def _record_synthesis(self, household_id: int) -> None:
+        """Counted when the gate opens, not when the vendor answers. A call
+        that is attempted and fails still consumed an attempt, and counting
+        optimistically here keeps the cap fail-closed under concurrency."""
+        today = datetime.now(timezone.utc).date()
+        with self._counts_lock:
+            self._prune_counts(today)
+            self._synthesis_counts[(household_id, today)] = (
+                self._synthesis_counts.get((household_id, today), 0) + 1
+            )
+
+    def _prune_counts(self, today: date) -> None:
+        """Caller must hold the lock. Yesterday's counters are dead weight."""
+        for key in [key for key in self._synthesis_counts if key[1] != today]:
+            del self._synthesis_counts[key]
+
+    def _gate_logistics(self, context: dict[str, Any], method: str) -> tuple[bool, str]:
         if not context.get("order_under_consideration"):
             return False, "logistics tool requested with no order under consideration"
         return True, ""
 
-    def _gate_payments(self, context: dict[str, Any]) -> tuple[bool, str]:
+    def _gate_payments(self, context: dict[str, Any], method: str) -> tuple[bool, str]:
         tier = context.get("tier")
         budget_check_passed = context.get("budget_check_passed")
         if tier != SpendTier.GREEN:
@@ -84,7 +130,7 @@ class ToolRegistry:
             return False, "payments tool requires a passing deterministic budget check"
         return True, ""
 
-    def _gate_commerce(self, context: dict[str, Any]) -> tuple[bool, str]:
+    def _gate_commerce(self, context: dict[str, Any], method: str) -> tuple[bool, str]:
         # Commerce (search/quote) is read-only and low-risk; gated only on
         # having a household context at all, so a stray call can't leak
         # cross-household catalog behavior.
@@ -103,9 +149,13 @@ class ToolRegistry:
         """The single call surface. `context` carries whatever the gate for
         `kind` needs (see the _gate_* methods above) — callers must build it
         explicitly rather than the registry inferring it, so a missing
-        context key fails closed instead of silently passing."""
+        context key fails closed instead of silently passing.
+
+        `method` reaches the gate as well as the provider, because some
+        gates care which method is being called: voice replies are free,
+        voice *synthesis* spends vendor credits and is capped."""
         gate_name = self._GATES[kind]
-        allowed, reason = getattr(self, gate_name)(context)
+        allowed, reason = getattr(self, gate_name)(context, method)
         if not allowed:
             self.blocked_calls.record(kind, reason, context)
             raise ToolCallRefused(kind, reason)
@@ -113,5 +163,7 @@ class ToolRegistry:
         provider = self._providers.get(kind)
         if provider is None:
             raise RuntimeError(f"No provider registered for tool kind {kind.value}")
+        if kind is ToolKind.VOICE and method == "synthesize":
+            self._record_synthesis(context["household_id"])
         fn: Callable = getattr(provider, method)
         return fn(*args, **kwargs)

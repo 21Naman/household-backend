@@ -199,6 +199,11 @@ class RecipeGenerationResponse(APIModel):
     approval_request_id: int | None = None
     delivery_confidence: float = Field(ge=0, le=1)
     generation_provider: str
+    # Opaque handle for the spoken briefing. Generating the recipe does no
+    # rewrite and no synthesis: audio is produced on demand, only if the
+    # cook actually asks to hear it. None when the cook's language has no
+    # configured voice, in which case text is the whole story.
+    audio_id: str | None = None
 
 
 class LoopStart(APIModel):
@@ -227,13 +232,32 @@ class ApprovalDecision(APIModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class ConsumedItem(APIModel):
+    """What the cook reports actually went into the dish.
+
+    Deliberately not CartItem. That is the commerce payload and carries a
+    required `unit_price_inr`, so reporting "I used two hundred grams of
+    rice" meant inventing a price for it -- every caller passed zero, which
+    is the shape telling you it does not belong here. Consumption and
+    purchase are different events; only one of them has a price.
+
+    `unit` is carried even though app/api/routes.py::capture_outcome matches
+    lots by name alone and never reads it. It is what lets a client warn
+    before submitting that the recipe's unit disagrees with the lot's --
+    without it, a silently wrong deduction has no signal at all.
+    """
+
+    name: str = Field(min_length=1, max_length=200)
+    quantity: float = Field(gt=0)
+    unit: str = Field(min_length=1, max_length=32)
+
+
 class OutcomeCapture(APIModel):
     dish_name: str
     rating: int | None = Field(default=None, ge=1, le=5)
     feedback: str = ""
     leftovers_portions: float = Field(default=0, ge=0)
-    consumed: list[CartItem] = []
-    cook_status: str = "confirmed"
+    consumed: list[ConsumedItem] = []
     mishap: bool = False
 
 

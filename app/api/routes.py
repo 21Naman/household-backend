@@ -21,12 +21,14 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlmodel import Session, select
 
 from app.api.deps import get_db_session, require_api_key
 from app.core.container import Container, get_container
 from app.core.registry import ToolCallRefused, ToolKind
+from app.core.recipe_audio_cache import RecipeAudioEntry
+from app.core.recipe_briefing import RecipeBriefer, RecipeBriefingError
 from app.core.recipe_planner import RecipeConstraintError, RecipeGenerator
 from app.core.state_store import LocalStateStore
 from app.enums import ApprovalStatus, LoopStatus, SpendTier
@@ -41,7 +43,9 @@ from app.models import (
     MealLoopRecord,
     PineLabsConnection,
 )
+from app.providers.language import resolve_voiced_language
 from app.providers.model_failures import RecipeProviderOperationalError
+from app.providers.voice import VoiceSynthesisUnavailable, join_audio
 from app.repositories import Repository
 from app.schemas import (
     ApprovalDecision,
@@ -309,6 +313,13 @@ def generate_recipe(
         try:
             recipe = generator.generate(request_prompt, correction_provider=correction_provider)
             correction_provider = generator.last_provider_name
+            # RoundRobinRecipeProvider.last_provider_name is a shared mutable
+            # field on a process-wide singleton. The briefing rewrite calls
+            # the same chain from the audio endpoint, so reading it later --
+            # after any await or across a concurrent request -- can report
+            # the wrong author. Capture it here, next to the call it
+            # describes.
+            generation_provider = generator.last_provider_name or "unknown"
             assessment = generator.assess(
                 recipe,
                 state.inventory,
@@ -375,7 +386,7 @@ def generate_recipe(
         reason=tier_reason,
     )
 
-    provider_name = generator.last_provider_name or "unknown"
+    provider_name = generation_provider
     session.add(
         AuditEvent(
             household_id=household_id,
@@ -389,17 +400,22 @@ def generate_recipe(
     )
     session.commit()
 
+    missing_payload = [
+        {
+            "ingredient": item.ingredient,
+            "missing_quantity": item.missing_quantity,
+            "unit": item.unit,
+            "quantity_unknown": item.quantity_unknown,
+        }
+        for item in assessment.gap
+    ]
+    audio_id = _stage_recipe_audio(
+        container, session, household_id, loop_id, assessment.recipe, missing_payload
+    )
+
     return RecipeGenerationResponse(
         recipe=assessment.recipe,
-        missing_ingredients=[
-            {
-                "ingredient": item.ingredient,
-                "missing_quantity": item.missing_quantity,
-                "unit": item.unit,
-                "quantity_unknown": item.quantity_unknown,
-            }
-            for item in assessment.gap
-        ],
+        missing_ingredients=missing_payload,
         availability_ratio=assessment.availability_ratio,
         quotes=[RecipeQuote(provider_name=q.provider_name, total_inr=q.total_inr, feasible=q.feasible) for q in quotes],
         procurement_path=path,
@@ -411,6 +427,7 @@ def generate_recipe(
         approval_request_id=approval_request.id if approval_request else None,
         delivery_confidence=delivery.confidence,
         generation_provider=provider_name,
+        audio_id=audio_id,
     )
 
 
@@ -524,6 +541,159 @@ def send_cook_brief(household_id: int, loop_id: int, dish_name: str, instruction
     return {"text": brief.text, "language": brief.language}
 
 
+def _stage_recipe_audio(container, session, household_id, loop_id, recipe, missing_payload) -> str | None:
+    """Park the recipe so it can be voiced later, and return its handle.
+
+    No model call and no synthesis happen here -- that is the whole point of
+    doing the work at fetch time.
+
+    The cook's language is resolved now, not at fetch, and the resolved
+    language and voice are carried on the entry. Every household gets audio:
+    a language with its own configured voice keeps it, and everything else
+    falls back to the configured default (Hinglish), which is a briefing an
+    Indian home cook can actually follow rather than a guessed language.
+
+    Returns None only if the fallback itself is misconfigured, which is an
+    operator error rather than a property of this household.
+    """
+    cook_rows = Repository(CookProfile, session).list_for_household(household_id)
+    cook = cook_rows[0] if cook_rows else CookProfile(household_id=household_id)
+    settings = container.settings
+    try:
+        language, voice = resolve_voiced_language(
+            cook.language,
+            settings.gnani_language_map,
+            settings.gnani_voice_map,
+            settings.gnani_default_language,
+        )
+    except ValueError as exc:
+        logger.warning("Audio briefing unavailable: %s", exc)
+        return None
+    return container.recipe_audio_cache.put(
+        RecipeAudioEntry(
+            household_id=household_id,
+            loop_id=loop_id,
+            recipe=recipe,
+            missing_ingredients=missing_payload,
+            language=language,
+            voice=voice,
+            skill_level=cook.skill_level,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+
+@router.get("/v2/households/{household_id}/loops/{loop_id}/recipe-audio/{audio_id}")
+def get_recipe_audio(
+    household_id: int,
+    loop_id: int,
+    audio_id: str,
+    session: Session = Depends(get_db_session),
+) -> Response:
+    """Voice a generated recipe, synthesizing on first request.
+
+    Everything expensive happens here rather than at generation time: the
+    rewrite into speakable sentences, and the Gnani call. A cook who never
+    presses play costs nothing. The result is cached for the entry's
+    lifetime, so replaying -- or a browser issuing range requests while
+    scrubbing -- does not re-spend.
+
+    The household and loop in the path are re-checked against the cache
+    entry. An opaque id is unguessable, but this system has no
+    cross-household read path anywhere else and this is not going to be the
+    exception.
+    """
+    container = get_container()
+    settings = container.settings
+    entry = container.recipe_audio_cache.get(audio_id, household_id, loop_id)
+    if entry is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "No briefing is waiting under that id. Generated recipes are held in memory "
+            "only, so it may have expired — generate the recipe again.",
+        )
+
+    with entry.lock:
+        if entry.audio is not None:
+            return Response(content=entry.audio, media_type=entry.media_type)
+
+        # Resolved when the recipe was generated and carried on the entry, so
+        # a settings change between POST and GET cannot leave this call with a
+        # language that has no voice.
+        language, voice = entry.language, entry.voice
+
+        briefer = RecipeBriefer(container.recipe_model_provider, max_chars=settings.gnani_tts_max_chars)
+        try:
+            briefing = briefer.brief(
+                entry.recipe,
+                entry.missing_ingredients,
+                language=language,
+                skill_level=entry.skill_level,
+            )
+        except RecipeBriefingError as exc:
+            _record_audio_failure(session, household_id, loop_id, f"rewrite: {exc}")
+            raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+
+        chunks = briefer.chunk(briefing)
+        parts: list[bytes] = []
+        try:
+            media_type = container.voice.audio_media_type()
+            for chunk in chunks:
+                parts.append(
+                    container.registry.invoke(
+                        ToolKind.VOICE,
+                        "synthesize",
+                        {"cook_facing": True, "household_id": household_id},
+                        text=chunk,
+                        language=language,
+                        voice=voice,
+                    )
+                )
+        except ToolCallRefused as exc:
+            _record_audio_failure(session, household_id, loop_id, f"refused: {exc.reason}")
+            raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+        except VoiceSynthesisUnavailable as exc:
+            # Not a failure: the zero-credential build working as designed.
+            raise HTTPException(status.HTTP_501_NOT_IMPLEMENTED, str(exc)) from exc
+        except Exception as exc:
+            _record_audio_failure(session, household_id, loop_id, f"synthesis: {type(exc).__name__}")
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                f"Speech synthesis failed: {exc}. The recipe text remains available.",
+            ) from exc
+
+        entry.spoken_text = briefing.text
+        entry.media_type = media_type
+        entry.audio = join_audio(parts, media_type)
+
+    session.add(
+        AuditEvent(
+            household_id=household_id,
+            meal_loop_id=loop_id,
+            event="recipe_audio_served",
+            # Deliberately no recipe text and no spoken text: routing that
+            # through the audit table would persist the generated recipe by
+            # the back door.
+            detail=f"language={language.value} voice={voice} chunks={len(chunks)} bytes={len(entry.audio)}",
+        )
+    )
+    session.commit()
+    return Response(content=entry.audio, media_type=entry.media_type)
+
+
+def _record_audio_failure(session: Session, household_id: int, loop_id: int, reason: str) -> None:
+    """Reason only. Never the recipe, never the briefing text."""
+    session.add(
+        AuditEvent(
+            household_id=household_id,
+            meal_loop_id=loop_id,
+            event="recipe_audio_failed",
+            detail=reason[:400],
+        )
+    )
+    session.commit()
+
+
 @router.post("/households/{household_id}/loops/{loop_id}/confirm-cook")
 def confirm_cook(household_id: int, loop_id: int, session: Session = Depends(get_db_session)) -> MealLoopRecord:
     repo = Repository(MealLoopRecord, session)
@@ -540,7 +710,14 @@ def capture_outcome(household_id: int, loop_id: int, payload: OutcomeCapture, se
     loop = loop_repo.get_for_household(loop_id, household_id)
 
     try:
-        Repository(DishHistory, session).create(
+        # session.add, NOT Repository.create: that helper commits internally
+        # (app/repositories.py), which committed this history row before the
+        # inventory deduction and loop update below had run. A failure after
+        # that point left an orphan history row for a loop that never closed,
+        # which session.rollback() could not undo -- directly contradicting
+        # this function's own docstring. One commit, at the end, covers all
+        # three writes.
+        session.add(
             DishHistory(
                 household_id=household_id,
                 dish_name=payload.dish_name,

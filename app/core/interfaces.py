@@ -29,7 +29,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
-from app.enums import SpendTier
+from app.enums import Language, SpendTier
 from app.providers.logistics_mock import DeliveryConfidence
 from app.providers.payments_mock import PaymentResult
 from app.providers.voice import CookBrief
@@ -37,6 +37,7 @@ from app.providers.zepto_mcp import CartQuote
 
 __all__ = [
     "CartQuote",
+    "Language",
     "CommerceProvider",
     "CookBrief",
     "DeliveryConfidence",
@@ -106,10 +107,34 @@ class EventScheduler(Protocol):
 
 @runtime_checkable
 class VoiceProvider(Protocol):
+    """Both legs of the cook interface.
+
+    `transcribe` remains declared although no implementation currently
+    serves it: the local Whisper adapter was removed once Gnani credentials
+    existed, and Gnani's own STT stays gated on RQ7. Two-way voice is
+    deferred, not abandoned, so the seat stays declared rather than being
+    deleted and reinstated later as a protocol change.
+
+    `synthesize` is deliberately generic — text in, audio bytes out, with
+    nothing recipe-shaped about it. Turning a recipe into speakable
+    sentences is a separate model call that happens in
+    app/core/recipe_briefing.py before this is ever reached.
+    """
+
     def transcribe(self, audio: bytes, suffix: str = ".webm", expected_language: str | None = None) -> dict:
         ...
 
     def reply(self, dish_name: str, instructions: str, language: str, skill_level: str) -> CookBrief:
+        ...
+
+    def synthesize(self, text: str, language: Language, voice: str | None = None) -> bytes:
+        ...
+
+    def audio_media_type(self) -> str:
+        """The media type of whatever `synthesize` returns, so the route
+        does not have to assume. The live rail is configurable (MP3 by
+        default); the offline mock answers with what it can actually
+        generate."""
         ...
 
 

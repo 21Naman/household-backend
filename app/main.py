@@ -2,16 +2,13 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
-from app.settings import enable_local_only_defaults, get_settings
-
-# This runs before the route imports can lazily import faster-whisper and its
-# Hugging Face Hub dependency. A local cache miss must become a typed fallback,
-# never a Hub cache/version request.
-enable_local_only_defaults()
+from app.settings import get_settings
 
 from app.api.routes import router
 from app.api.routes_crud import router as crud_router
@@ -62,9 +59,17 @@ app.include_router(crud_router, prefix="/api")
 app.include_router(router, prefix="/api")
 
 
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# The demo UI. Mounted AFTER every route above, because a mount at "/"
+# matches anything unclaimed before it and would otherwise swallow /health
+# and /docs. Served same-origin, so the CORS allowlist does not apply to it.
+# This is the only static mount in the application.
+app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")
 
 
 def run() -> None:

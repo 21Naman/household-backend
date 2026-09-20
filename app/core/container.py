@@ -18,7 +18,10 @@ from app.providers.ollama import OllamaProvider
 from app.providers.payments_mock import MockPaymentProvider
 from app.providers.recipe_model_chain import RoundRobinRecipeProvider
 from app.providers.groq_model import GroqModelProvider
+from app.core.recipe_audio_cache import RecipeAudioCache
 from app.providers.voice import LocalVoiceProvider
+from app.providers.voice_gnani import GnaniBackedVoiceProvider, GnaniVoiceProvider
+from app.providers.voice_mock import MockVoiceProvider
 from app.providers.zepto_mcp import ZeptoMCPProvider
 from app.settings import Settings, get_settings
 
@@ -37,6 +40,7 @@ class Container:
     payments: MockPaymentProvider
     logistics: MockLogisticsProvider
     voice: LocalVoiceProvider
+    recipe_audio_cache: RecipeAudioCache
 
 
 _container: Container | None = None
@@ -55,9 +59,9 @@ def build_container(settings: Settings | None = None) -> Container:
     commerce_second = CommerceMockProvider(provider_name=settings.commerce_second_provider_name)
     payments = MockPaymentProvider()
     logistics = MockLogisticsProvider()
-    voice = LocalVoiceProvider(model_provider)
+    voice = _build_voice(settings, model_provider)
 
-    registry = ToolRegistry()
+    registry = ToolRegistry(daily_synthesis_limit=settings.gnani_daily_synthesis_limit)
     registry.register(ToolKind.COMMERCE, zepto)
     registry.register(ToolKind.PAYMENTS, payments)
     registry.register(ToolKind.LOGISTICS, logistics)
@@ -74,7 +78,37 @@ def build_container(settings: Settings | None = None) -> Container:
         payments=payments,
         logistics=logistics,
         voice=voice,
+        recipe_audio_cache=RecipeAudioCache(
+            ttl_seconds=settings.recipe_audio_ttl_seconds,
+            max_entries=settings.recipe_audio_cache_max_entries,
+        ),
     )
+
+
+def _build_voice(settings: Settings, model_provider):
+    """BUILD IT vs SHIP IT for the voice rail, decided here and only here.
+
+    The offline mock is the default and stays useful after the live rail
+    works: it is what CI and credential-free development run against. The
+    live rail is selected only when a key is configured AND the mock flag
+    is explicitly off, so an operator who sets a key but forgets the flag
+    gets the mock plus a startup warning rather than silent live spend.
+
+    Unlike commerce_mock_enabled, pinelabs_mock_enabled and
+    delhivery_mock_enabled -- which are reporting-only -- this flag now
+    branches.
+    """
+    if settings.gnani_mock_enabled or not settings.gnani_api_key:
+        return MockVoiceProvider(model_provider)
+    gnani = GnaniVoiceProvider(
+        api_key=settings.gnani_api_key,
+        base_url=settings.gnani_base_url,
+        tts_model=settings.gnani_tts_model,
+        audio_config=settings.gnani_audio_config(),
+        speed=settings.gnani_tts_speed,
+        timeout_seconds=settings.request_timeout_seconds,
+    )
+    return GnaniBackedVoiceProvider(model_provider, gnani)
 
 
 def get_container() -> Container:

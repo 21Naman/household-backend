@@ -4,7 +4,7 @@ import pytest
 
 from app.providers.json_schema import validate_against_schema
 from app.providers.ollama import validate_structured_json
-from app.providers.whisper import language_mismatch
+from app.providers.language import language_mismatch
 from app.settings import Settings
 
 
@@ -91,7 +91,7 @@ def test_generate_structured_end_to_end_with_valid_schema(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# whisper.py -- language_mismatch helper
+# language.py -- language_mismatch helper
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(

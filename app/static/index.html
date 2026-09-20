@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aaj Kya Banega</title>
+<style>
+  :root {
+    --bg: #faf7f2; --panel: #ffffff; --ink: #24201b; --muted: #6d655b;
+    --line: #e5ded3; --accent: #b4552d; --accent-soft: #fdf0e9;
+    --ok: #2f6b4f; --warn: #8a6d1f; --err: #a33a2a;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17150f; --panel: #201d17; --ink: #efe9e0; --muted: #a79d90;
+      --line: #35302a; --accent: #e08152; --accent-soft: #2c211a;
+      --ok: #7fc0a0; --warn: #d6b45c; --err: #e08b7b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 24px 16px 64px;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 24px; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px; margin-bottom: 18px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; }
+  label { display: block; font-size: 0.75rem; text-transform: uppercase;
+          letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; }
+  input, select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit;
+  }
+  textarea { resize: vertical; }
+  /* One consumed-ingredient row: name, editable amount, unit, remove. The
+     warning spans the full width beneath so a long message never squeezes
+     the controls. */
+  .crow {
+    display: grid; grid-template-columns: 1fr 96px auto auto;
+    gap: 8px; align-items: center; margin-bottom: 8px;
+  }
+  .crow .cwarn {
+    grid-column: 1 / -1; font-size: 0.8rem; color: var(--warn); margin-top: -2px;
+  }
+  .crow .cunit { color: var(--muted); font-size: 0.85rem; }
+  .crow .cdrop { padding: 6px 10px; line-height: 1; }
+  @media (max-width: 480px) {
+    .crow { grid-template-columns: 1fr 80px auto auto; }
+  }
+  .field { flex: 1 1 120px; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px;
+    padding: 10px 16px; border: 1px solid transparent;
+    background: var(--accent); color: #fff;
+  }
+  button.ghost { background: transparent; border-color: var(--line); color: var(--ink); }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  .actions { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  .note { font-size: 0.85rem; color: var(--muted); }
+  .err { color: var(--err); }
+  .recipe h2 { margin: 0 0 4px; font-size: 1.25rem; }
+  .meta { color: var(--muted); font-size: 0.875rem; margin-bottom: 16px; }
+  .sec { margin-top: 18px; }
+  .sec h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em;
+            color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+  ul, ol { margin: 0; padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .chip {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600; background: var(--accent-soft);
+    color: var(--accent); margin-right: 6px;
+  }
+  .missing { background: var(--accent-soft); border-left: 3px solid var(--accent);
+             padding: 10px 12px; border-radius: 0 8px 8px 0; }
+  audio { width: 100%; margin-top: 12px; }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%;
+    display: inline-block; animation: spin 0.8s linear infinite; vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  details summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+  pre { overflow-x: auto; font-size: 0.75rem; background: var(--bg);
+        padding: 10px; border-radius: 8px; border: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Aaj Kya Banega</h1>
+  <p class="sub">Generate a recipe, then have it read aloud to the cook.</p>
+
+  <div class="panel">
+    <div class="row">
+      <div class="field"><label for="household">Household</label><input id="household" type="number" value="1" min="1" /></div>
+      <div class="field"><label for="servings">Servings</label><input id="servings" type="number" value="2" min="1" max="20" /></div>
+      <div class="field"><label for="guests">Guests</label><input id="guests" type="number" value="0" min="0" max="18" /></div>
+      <div class="field"><label for="minutes">Minutes</label><input id="minutes" type="number" value="45" min="1" max="360" /></div>
+      <div class="field"><label for="urgency">Urgency</label>
+        <select id="urgency"><option>routine</option><option>urgent</option></select></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div class="field" style="flex:1 1 100%"><label for="apikey">API key (only if HOUSEHOLD_API_KEY is set)</label>
+        <input id="apikey" type="password" placeholder="leave blank for local runs" autocomplete="off" /></div>
+    </div>
+    <div class="actions">
+      <button id="go">Generate recipe</button>
+      <span id="status" class="note"></span>
+    </div>
+  </div>
+
+  <div id="out"></div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var out = $("out"), statusEl = $("status"), goBtn = $("go");
+
+  try {
+    var saved = localStorage.getItem("household-api-key");
+    if (saved) { $("apikey").value = saved; }
+  } catch (e) { /* private mode: the field just starts empty */ }
+
+  function headers() {
+    var h = { "Content-Type": "application/json" };
+    var key = $("apikey").value.trim();
+    if (key) { h["X-API-Key"] = key; }
+    return h;
+  }
+
+  function esc(value) {
+    return String(value).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function setStatus(text, busy) {
+    statusEl.innerHTML = busy ? '<span class="spinner"></span> ' + esc(text) : esc(text);
+    statusEl.className = "note";
+  }
+
+  function fail(text) { statusEl.textContent = text; statusEl.className = "note err"; }
+
+  async function detail(response) {
+    try {
+      var body = await response.json();
+      if (typeof body.detail === "string") { return body.detail; }
+      if (body.detail && body.detail.message) { return body.detail.message; }
+      return JSON.stringify(body.detail || body);
+    } catch (e) { return "HTTP " + response.status; }
+  }
+
+  async function generate() {
+    goBtn.disabled = true;
+    out.innerHTML = "";
+    setStatus("Starting a loop…", true);
+    var hid = Number($("household").value);
+    try {
+      var loopResponse = await fetch("/api/households/" + hid + "/loops", {
+        method: "POST", headers: headers(),
+        body: JSON.stringify({ trigger_type: "manual" })
+      });
+      if (!loopResponse.ok) { throw new Error(await detail(loopResponse)); }
+      var loop = await loopResponse.json();
+
+      setStatus("Asking the model for a recipe…", true);
+      var body = {
+        servings: Number($("servings").value),
+        guests: Number($("guests").value),
+        available_minutes: Number($("minutes").value),
+        urgency: $("urgency").value
+      };
+      var recipeResponse = await fetch(
+        "/api/v2/households/" + hid + "/loops/" + loop.id + "/recipe",
+        { method: "POST", headers: headers(), body: JSON.stringify(body) }
+      );
+      if (!recipeResponse.ok) { throw new Error(await detail(recipeResponse)); }
+      var data = await recipeResponse.json();
+
+      try { localStorage.setItem("household-api-key", $("apikey").value.trim()); } catch (e) {}
+      setStatus("Generated by " + data.generation_provider + ".");
+
+      // The closure panel warns about ingredients that will not deduct
+      // cleanly, and it can only do that by comparing against real lots.
+      // A failure here must not block the recipe, so it degrades to an
+      // empty list and the warnings simply go quiet.
+      var inventory = await loadInventory(hid);
+      render(data, hid, loop.id, inventory);
+    } catch (error) {
+      fail(error.message || String(error));
+    } finally {
+      goBtn.disabled = false;
+    }
+  }
+
+  async function loadInventory(hid) {
+    try {
+      var response = await fetch("/api/households/" + hid + "/inventory", { headers: headers() });
+      if (!response.ok) { return []; }
+      return await response.json();
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // The backend matches inventory lots by name alone, after strip+lower, and
+  // ignores units entirely (app/api/routes.py::capture_outcome). Mirror that
+  // exactly: a warning that describes what *should* happen rather than what
+  // will happen is worse than no warning.
+  function findLot(inventory, name) {
+    var needle = String(name).trim().toLowerCase();
+    for (var i = 0; i < inventory.length; i++) {
+      if (String(inventory[i].ingredient).trim().toLowerCase() === needle) { return inventory[i]; }
+    }
+    return null;
+  }
+
+  function render(data, hid, loopId, inventory) {
+    var r = data.recipe;
+    var html = '<div class="panel recipe">';
+    html += "<h2>" + esc(r.title) + "</h2>";
+    html += '<p class="meta">Serves ' + esc(r.servings) + " · about " + esc(r.prep_minutes) +
+            " minutes · " + Math.round(data.availability_ratio * 100) + "% already in the kitchen</p>";
+
+    if (data.missing_ingredients.length) {
+      html += '<div class="missing"><strong>Not in the kitchen:</strong><ul>';
+      data.missing_ingredients.forEach(function (m) {
+        html += "<li>" + esc(m.ingredient) +
+                (m.quantity_unknown ? "" : " — " + esc(m.missing_quantity) + " " + esc(m.unit)) + "</li>";
+      });
+      html += "</ul></div>";
+    }
+
+    html += '<div class="sec"><h3>Ingredients</h3><ul>';
+    r.ingredients.forEach(function (i) {
+      html += "<li>" + esc(i.quantity) + " " + esc(i.unit) + " " + esc(i.ingredient) + "</li>";
+    });
+    html += "</ul></div>";
+
+    if (r.assumed_pantry_staples.length) {
+      html += '<div class="sec"><h3>Assumed on hand</h3><p class="note">' +
+              r.assumed_pantry_staples.map(esc).join(", ") + "</p></div>";
+    }
+
+    html += '<div class="sec"><h3>Steps</h3><ol>';
+    r.steps.forEach(function (s) { html += "<li>" + esc(s) + "</li>"; });
+    html += "</ol></div>";
+
+    html += '<div class="sec"><h3>Nutrition</h3><ul>';
+    r.nutrition_notes.forEach(function (n) { html += "<li>" + esc(n) + "</li>"; });
+    html += "</ul></div>";
+
+    html += '<div class="sec"><h3>Procurement</h3><p><span class="chip">' + esc(data.tier) +
+            '</span><span class="chip">' + esc(data.procurement_path) + "</span></p>" +
+            '<p class="note">' + esc(data.procurement_reason) + "</p></div>";
+
+    html += '<div class="sec"><h3>Audio briefing</h3><div id="audio-slot"></div></div>';
+    html += '<details class="sec"><summary>Raw response</summary><pre>' +
+            esc(JSON.stringify(data, null, 2)) + "</pre></details>";
+    html += "</div>";
+    html += cookedPanelMarkup(data, inventory);
+    out.innerHTML = html;
+
+    hydrateAudio(data, hid, loopId);
+    hydrateCookedPanel(data, hid, loopId, inventory);
+  }
+
+  function hydrateAudio(data, hid, loopId) {
+    var slot = $("audio-slot");
+    if (!data.audio_id) {
+      // Deliberately not an early return out of render(): this used to bail
+      // before anything below it was wired up, so a household whose cook
+      // language has no configured voice silently lost the rest of the page.
+      slot.innerHTML = '<p class="note">No voice is configured for this cook’s language, ' +
+                       "so this recipe is text only.</p>";
+      return;
+    }
+    var button = document.createElement("button");
+    button.className = "ghost";
+    button.textContent = "▶ Read it to me";
+    var note = document.createElement("p");
+    note.className = "note";
+    note.style.marginTop = "8px";
+    slot.appendChild(button);
+    slot.appendChild(note);
+
+    button.addEventListener("click", function () {
+      button.disabled = true;
+      // Synthesis happens on this request, not when the recipe was
+      // generated, so the wait here is real and has to be visible.
+      note.innerHTML = '<span class="spinner"></span> Writing the briefing and synthesizing speech…';
+      fetch("/api/v2/households/" + hid + "/loops/" + loopId + "/recipe-audio/" + data.audio_id,
+            { headers: headers() })
+        .then(async function (response) {
+          if (!response.ok) { throw new Error(await detail(response)); }
+          return response.blob();
+        })
+        .then(function (blob) {
+          note.textContent = "";
+          var player = document.createElement("audio");
+          player.controls = true;
+          player.src = URL.createObjectURL(blob);
+          slot.replaceChild(player, button);
+          player.play().catch(function () { /* autoplay blocked: controls are there */ });
+        })
+        .catch(function (error) {
+          button.disabled = false;
+          note.innerHTML = '<span class="err">' + esc(error.message) +
+                           "</span><br />The recipe above is unchanged — text is always available.";
+        });
+    });
+  }
+
+  // -- "I cooked this": the half of the loop the UI never had ---------------
+  //
+  // Generating a recipe is read-only. Nothing moves stock, nothing writes
+  // history, and the loop sits at `planned` until the unclosed sweep flags
+  // it. POST /outcome does all of that in one call; this is its first client.
+
+  function cookedPanelMarkup(data, inventory) {
+    var rows = "";
+    data.recipe.ingredients.forEach(function (item, index) {
+      var lot = findLot(inventory, item.ingredient);
+      var warning = "";
+      if (lot === null) {
+        warning = "not in inventory — nothing will be deducted";
+      } else if (String(lot.unit).trim().toLowerCase() !== String(item.unit).trim().toLowerCase()) {
+        warning = "lot is in " + esc(lot.unit) + " — check the amount before submitting";
+      } else if (Number(lot.quantity) < Number(item.quantity)) {
+        warning = "only " + esc(lot.quantity) + " " + esc(lot.unit) + " in stock";
+      }
+      rows +=
+        '<div class="crow" data-row="' + index + '">' +
+        '<span class="cname">' + esc(item.ingredient) + "</span>" +
+        '<input class="cqty" type="number" step="any" min="0" value="' + esc(item.quantity) + '" />' +
+        '<span class="cunit">' + esc(item.unit) + "</span>" +
+        '<button type="button" class="ghost cdrop" title="Remove this row">×</button>' +
+        (warning ? '<span class="cwarn">⚠ ' + warning + "</span>" : "") +
+        "</div>";
+    });
+
+    return (
+      '<div class="panel" id="cooked-panel">' +
+      "<h2>I cooked this</h2>" +
+      '<p class="sub" style="margin-bottom:16px">Closing the loop writes history and takes ' +
+      "the ingredients out of the kitchen.</p>" +
+      '<div class="row">' +
+      '<div class="field" style="flex:2 1 220px"><label for="ck-dish">Dish</label>' +
+      '<input id="ck-dish" type="text" value="' + esc(data.recipe.title) + '" /></div>' +
+      '<div class="field"><label for="ck-rating">Rating</label><select id="ck-rating">' +
+      '<option value="">—</option><option>1</option><option>2</option><option>3</option>' +
+      "<option>4</option><option selected>5</option></select></div>" +
+      '<div class="field"><label for="ck-left">Leftover portions</label>' +
+      '<input id="ck-left" type="number" min="0" step="any" value="0" /></div>' +
+      "</div>" +
+      '<div class="row" style="margin-top:12px"><div class="field" style="flex:1 1 100%">' +
+      '<label for="ck-feedback">How did it go?</label>' +
+      '<textarea id="ck-feedback" rows="2" placeholder="optional"></textarea></div></div>' +
+      '<p style="margin:14px 0 0"><label style="text-transform:none;letter-spacing:0;font-size:0.9rem">' +
+      '<input id="ck-mishap" type="checkbox" style="width:auto;margin-right:8px" />' +
+      "Something went wrong (records it as not accepted)</label></p>" +
+      '<div class="sec"><h3>Used from the kitchen</h3>' + (rows || '<p class="note">Nothing to deduct.</p>') +
+      "</div>" +
+      '<div class="actions"><button id="ck-submit">Close the loop</button>' +
+      '<span id="ck-note" class="note"></span></div>' +
+      "</div>"
+    );
+  }
+
+  function hydrateCookedPanel(data, hid, loopId, inventory) {
+    var panel = $("cooked-panel");
+    if (!panel) { return; }
+    var submit = $("ck-submit");
+    var note = $("ck-note");
+
+    panel.querySelectorAll(".cdrop").forEach(function (button) {
+      button.addEventListener("click", function () {
+        button.closest(".crow").remove();
+      });
+    });
+
+    submit.addEventListener("click", async function () {
+      var consumed = [];
+      panel.querySelectorAll(".crow").forEach(function (row) {
+        var quantity = Number(row.querySelector(".cqty").value);
+        // ConsumedItem.quantity is gt=0, so a blank or zero row would 422 the
+        // whole submission. Drop them here instead.
+        if (!(quantity > 0)) { return; }
+        consumed.push({
+          name: row.querySelector(".cname").textContent,
+          quantity: quantity,
+          unit: row.querySelector(".cunit").textContent
+        });
+      });
+
+      var rating = $("ck-rating").value;
+      var payload = {
+        dish_name: $("ck-dish").value.trim() || data.recipe.title,
+        rating: rating ? Number(rating) : null,
+        feedback: $("ck-feedback").value,
+        leftovers_portions: Number($("ck-left").value) || 0,
+        mishap: $("ck-mishap").checked,
+        consumed: consumed
+      };
+
+      submit.disabled = true;
+      note.className = "note";
+      note.innerHTML = '<span class="spinner"></span> Closing…';
+      try {
+        var response = await fetch("/api/households/" + hid + "/loops/" + loopId + "/outcome", {
+          method: "POST", headers: headers(), body: JSON.stringify(payload)
+        });
+        if (!response.ok) { throw new Error(await detail(response)); }
+
+        // capture_outcome does not validate loop state, so a second submit
+        // would write a duplicate history row and a second audit event.
+        // Staying disabled is the only thing preventing that.
+        submit.textContent = "Loop closed";
+        note.textContent = "";
+        showDeductions(panel, inventory, await loadInventory(hid));
+      } catch (error) {
+        submit.disabled = false;
+        note.innerHTML = '<span class="err">' + esc(error.message) +
+                         "</span><br />Nothing was written — the loop is still open.";
+      }
+    });
+  }
+
+  function showDeductions(panel, before, after) {
+    var lines = [];
+    after.forEach(function (lot) {
+      for (var i = 0; i < before.length; i++) {
+        if (before[i].id === lot.id && before[i].quantity !== lot.quantity) {
+          lines.push(esc(lot.ingredient) + ": " + esc(before[i].quantity) + " → " +
+                     esc(lot.quantity) + " " + esc(lot.unit));
+        }
+      }
+    });
+    var block = document.createElement("div");
+    block.className = "sec";
+    block.innerHTML =
+      "<h3>Kitchen updated</h3>" +
+      (lines.length
+        ? '<div class="missing">' + lines.join("<br />") + "</div>"
+        : '<p class="note">No lot changed — none of the names matched inventory.</p>');
+    panel.appendChild(block);
+  }
+
+  goBtn.addEventListener("click", generate);
+})();
+</script>
+</body>
+</html>

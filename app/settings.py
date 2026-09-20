@@ -1,16 +1,10 @@
 from __future__ import annotations
 
 from functools import lru_cache
-import os
 from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-def enable_local_only_defaults() -> None:
-    """Disable Hugging Face Hub network checks unless an operator opts out."""
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
 
 class Settings(BaseSettings):
@@ -25,7 +19,6 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen3:4b"
     vision_model: str = "qwen2.5vl:3b"
     vision_request_timeout_seconds: float = Field(default=60.0, gt=0)
-    whisper_model: str = "base"
     request_timeout_seconds: float = Field(default=30.0, gt=0)
     bedrock_model_id: str | None = None  # Ticket #33; unset in BUILD IT
     aws_region: str = "ap-south-1"
@@ -86,10 +79,124 @@ class Settings(BaseSettings):
     delhivery_maps_base_url: str | None = None
     delhivery_mock_enabled: bool = True
 
-    # -- Gnani voice (Ticket #25 local stub, #41 live — BLOCKED on RQ7) ------
+    # -- Gnani voice (Ticket #25 local stub, #41 live) -----------------------
+    # RQ7 (kitchen-noise robustness) blocks the *STT* leg only; it is a
+    # question about a microphone and there is no microphone in text-to-speech.
+    # See app/providers/voice_gnani.py for where that gate now sits.
     gnani_api_key: str | None = None
-    gnani_base_url: str | None = None
+    gnani_base_url: str = "https://api.vachana.ai/api/v1"
+    # Unlike the other *_mock_enabled flags, this one now branches: it is read
+    # in app/core/container.py to choose between MockVoiceProvider and the
+    # live Gnani provider.
     gnani_mock_enabled: bool = True
+    gnani_tts_model: str = "timbre-v2.5"
+    # Gnani's documented speed range is 0.85–1.15; anything outside it is a
+    # request the API will reject, so it is rejected here first. Note this is
+    # a TOP-LEVEL request field, not part of audio_config.
+    gnani_tts_speed: float = Field(default=1.0, ge=0.85, le=1.15)
+
+    # -- audio_config (a required object in the TTS request body) -------------
+    # MP3 because the bytes cross the response body on every cache miss with
+    # no CDN in front, and MP3 is roughly an order of magnitude smaller than
+    # WAV for speech at equivalent intelligibility.
+    gnani_audio_container: str = "mp3"
+    # Supported: 8000, 16000, 22050, 24000, 44100, 48000. 24k is plenty for
+    # speech; 48k triples the payload for no audible gain on a phone speaker.
+    gnani_sample_rate: int = 24000
+    gnani_num_channels: int = 1
+    gnani_sample_width: int = 2
+    # Only sent when the container is mp3. Supported: 32k/64k/96k/128k/192k.
+    gnani_mp3_bitrate: str = "128k"
+    # Only sent when the container is NOT mp3 — the docs state encoding is not
+    # required for mp3.
+    gnani_audio_encoding: str = "linear_pcm"
+
+    # The language used when the cook's profile language has no voice of its
+    # own. Hinglish, because a code-mixed briefing is what an Indian home cook
+    # actually follows, and because leaving eight of the eleven mapped
+    # languages with no audio at all was the alternative.
+    gnani_default_language: str = "hi-en"
+    # Free-text CookProfile.language -> app.enums.Language code.
+    # "hindi" deliberately targets the code-mixed hi-en voice: real Indian
+    # kitchen speech mixes English nouns ("pressure cooker", "microwave"),
+    # and pure hi-IN renders those as awkward transliterations.
+    gnani_language_map: dict[str, str] = Field(
+        default_factory=lambda: {
+            "hindi": "hi-en",
+            "hinglish": "hi-en",
+            "english": "en-IN",
+            "kannada": "kn-IN",
+            "tamil": "ta-IN",
+            "telugu": "te-IN",
+            "malayalam": "ml-IN",
+            "marathi": "mr-IN",
+            "punjabi": "pa-IN",
+            "bengali": "bn-IN",
+            "gujarati": "gu-IN",
+        }
+    )
+    # Language code -> Gnani voice name, so voices can be retuned without a
+    # code change. `voice` is a required field in the TTS request, so a
+    # language absent from this map cannot be synthesized directly — it falls
+    # back to gnani_default_language instead.
+    #
+    # Only the four voices Gnani's REST documentation actually names appear
+    # here. The catalog has 42 across ten languages, but inventing plausible
+    # names for Tamil or Bengali would produce a 400 "unsupported voice" at
+    # the worst possible moment. Add them from the real Voice Catalog once
+    # they have been read off it; until then those languages get Hinglish,
+    # which is a working briefing rather than a guessed one.
+    gnani_voice_map: dict[str, str] = Field(
+        default_factory=lambda: {
+            "hi-en": "Poorvi",
+            "hi-IN": "Nalini",
+            "en-IN": "Kaveri",
+        }
+    )
+    # MEASURED, not assumed — but measured loosely, so read the caveat.
+    # scripts/probe_gnani_tts.py against the live API observed:
+    #   500 / 1000 / 1500 / 2000 chars -> 200 OK
+    #   2500 chars -> HTTP 500 "We are facing technical difficulties" (one try)
+    #   3000 chars -> HTTP 500 on one run; a later retry was 429 rate-limited,
+    #                 which says nothing about length
+    # So: 2000 is known good, 2500 failed once, and the boundary between them
+    # was not bisected. Note the failure above the ceiling is an unhelpful
+    # server error, not a clean 400 naming a limit — which is a reason to stay
+    # well clear of it rather than to creep up on it.
+    #
+    # 1500 rather than 1999 on purpose: the boundary is approximate, the
+    # failure above it is ugly, and a normal recipe briefing lands well under
+    # it, so the chunker stays a rare path rather than a routine one.
+    gnani_tts_max_chars: int = Field(default=1500, gt=0)
+    # Per-household, per-day synthesis ceiling, enforced in
+    # ToolRegistry._gate_voice. A credit-consuming call is spend, and spend
+    # goes through the registry gate like every other kind.
+    gnani_daily_synthesis_limit: int = Field(default=50, gt=0)
+
+    # -- Recipe audio cache (ephemeral; never persisted) ----------------------
+    recipe_audio_ttl_seconds: int = Field(default=1800, gt=0)
+    recipe_audio_cache_max_entries: int = Field(default=32, gt=0)
+
+    def gnani_audio_config(self) -> dict[str, object]:
+        """The `audio_config` object sent with every TTS request.
+
+        Built here rather than in the provider so the request's shape has one
+        definition. `bitrate` applies only to mp3 and `encoding` is documented
+        as not required for mp3, so each is included only where it means
+        something — sending both unconditionally is how a 400 arrives with a
+        message about a field you did not think you were setting.
+        """
+        config: dict[str, object] = {
+            "container": self.gnani_audio_container,
+            "sample_rate": self.gnani_sample_rate,
+            "num_channels": self.gnani_num_channels,
+            "sample_width": self.gnani_sample_width,
+        }
+        if self.gnani_audio_container == "mp3":
+            config["bitrate"] = self.gnani_mp3_bitrate
+        else:
+            config["encoding"] = self.gnani_audio_encoding
+        return config
 
     # -- Auth gate (Ticket #7) ------------------------------------------------
     api_key: str | None = None
@@ -135,6 +242,11 @@ class Settings(BaseSettings):
             warnings.append("HOUSEHOLD_ZEPTO_TOKEN_ENCRYPTION_KEY is unset — Zepto connect will fail.")
         if not self.pinelabs_token_encryption_key and not self.pinelabs_mock_enabled:
             warnings.append("HOUSEHOLD_PINELABS_TOKEN_ENCRYPTION_KEY is unset and mock is disabled.")
+        if self.gnani_api_key and self.gnani_mock_enabled:
+            warnings.append(
+                "HOUSEHOLD_GNANI_API_KEY is set but HOUSEHOLD_GNANI_MOCK_ENABLED is true — "
+                "voice stays mocked. Set the mock flag to false to use the live rail."
+            )
         if not self.api_key:
             warnings.append(
                 "HOUSEHOLD_API_KEY is unset — the API will refuse to bind to a non-loopback host (Ticket #7)."

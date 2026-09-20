@@ -86,3 +86,95 @@ class FreshnessState(str, Enum):
         gap calculator. Conservative by design — STALE and UNKNOWN do not
         count, matching Ticket #9's "fail safe toward asking the human"."""
         return self in {FreshnessState.FRESH, FreshnessState.EXPIRES_TODAY, FreshnessState.EXPIRING_SOON}
+
+
+class Language(str, Enum):
+    """Gnani Timbre v2.5 language codes — the typed vocabulary for speech.
+
+    CookProfile.language, HouseholdMember.language and
+    Household.default_language are all free `str` columns holding a human
+    name ("Hindi", "English"). Gnani needs a fixed code. This enum is the
+    only place those codes are written down, for the same reason the rest
+    of this module exists: a mistyped "hi-In" must fail loudly, not send a
+    request that comes back voiced in the wrong language.
+
+    The profile-name to (code, voice) resolution lives in
+    Settings.gnani_voice_map so an operator can retune voices without a
+    code change. `script` lives here instead, because which script a
+    language is written in is a fact about the language, not an operator
+    preference — and the rewrite prompt and the TTS call must never
+    disagree about it.
+
+    Gnani's "auto" is deliberately absent: it asks the vendor to guess the
+    language, and an audio briefing confidently delivered in the wrong one
+    is worse than no audio at all.
+    """
+
+    HI_IN = "hi-IN"
+    EN_IN = "en-IN"
+    HI_EN = "hi-en"  # Hinglish — code-mixed, written in Latin script
+    KN_IN = "kn-IN"
+    TA_IN = "ta-IN"
+    TE_IN = "te-IN"
+    ML_IN = "ml-IN"
+    MR_IN = "mr-IN"
+    PA_IN = "pa-IN"
+    BN_IN = "bn-IN"
+    GU_IN = "gu-IN"
+
+    @property
+    def script(self) -> str:
+        """The script the rewrite step must produce for this language.
+
+        Latin for English and for Hinglish (which is *defined* by being
+        typed in Latin); the language's own script otherwise. Sending
+        Latin-transliterated Hindi to the hi-IN voice is the mispronunciation
+        case this property exists to prevent.
+        """
+        return _SCRIPT_BY_LANGUAGE[self]
+
+    @property
+    def display_name(self) -> str:
+        """How to name this language to a language model.
+
+        The enum's *value* is a routing code for Gnani. Putting "hi-en" into
+        a natural-language prompt asks a model to write in a string it has
+        no strong prior for; Hinglish especially degrades into either pure
+        English or transliterated-everything. This is the human name that
+        goes in the prompt instead.
+        """
+        return _DISPLAY_NAME_BY_LANGUAGE[self]
+
+
+_SCRIPT_BY_LANGUAGE: dict[Language, str] = {
+    Language.HI_IN: "Devanagari",
+    Language.EN_IN: "Latin",
+    Language.HI_EN: "Latin",
+    Language.KN_IN: "Kannada",
+    Language.TA_IN: "Tamil",
+    Language.TE_IN: "Telugu",
+    Language.ML_IN: "Malayalam",
+    Language.MR_IN: "Devanagari",
+    Language.PA_IN: "Gurmukhi",
+    Language.BN_IN: "Bengali",
+    Language.GU_IN: "Gujarati",
+}
+
+_DISPLAY_NAME_BY_LANGUAGE: dict[Language, str] = {
+    Language.HI_IN: "Hindi",
+    Language.EN_IN: "Indian English",
+    # Spelled out at length on purpose. "Hinglish" alone gets read as either
+    # "English with a few Hindi words" or "Hindi with everything
+    # transliterated", and neither is how a kitchen actually sounds.
+    # No "written in Latin script" here: the prompt appends the script clause
+    # right after the name, and saying it twice reads as an error.
+    Language.HI_EN: "Hinglish — everyday spoken Hindi mixed with English, the way Indian households actually talk",
+    Language.KN_IN: "Kannada",
+    Language.TA_IN: "Tamil",
+    Language.TE_IN: "Telugu",
+    Language.ML_IN: "Malayalam",
+    Language.MR_IN: "Marathi",
+    Language.PA_IN: "Punjabi",
+    Language.BN_IN: "Bengali",
+    Language.GU_IN: "Gujarati",
+}
