@@ -312,11 +312,16 @@
 
     html += '<div class="sec"><h3>Budget this month</h3>';
     if (budget) {
-      var remaining = Math.max(budget.monthly_limit - budget.spent_amount - budget.planned_amount, 0);
+      // Served by the API, never subtracted here. remaining_budget has one
+      // definition in app/services.py; a copy in the browser would be the
+      // number a reader sees while judging a decision the gate made using a
+      // different one.
+      var remaining = budget.remaining_inr;
       html += '<div class="money"><span>Limit</span><b>' + money(budget.monthly_limit) + "</b></div>";
       html += '<div class="money"><span>Spent</span><b>' + money(budget.spent_amount) + "</b></div>";
       html += '<div class="money"><span>Planned</span><b>' + money(budget.planned_amount) + "</b></div>";
-      html += '<div class="money"><span>Remaining</span><b>' + money(remaining) + "</b></div>";
+      html += '<div class="money"><span>Remaining</span><b>' +
+              (remaining === null ? "unconstrained" : money(remaining)) + "</b></div>";
     } else {
       html += '<p class="note">No budget on file — spend is unconstrained.</p>';
     }
@@ -385,13 +390,138 @@
   function renderRight(data, hid, loopId) {
     // `data` is null before a recipe exists: the event log still renders, so
     // a reader can watch the trail from the first click rather than after it.
-    var html = data ? recipeMarkup(data) + cookedPanelMarkup(data) : "";
+    var html = data ? recipeMarkup(data) + gateMarkup(data) + cookedPanelMarkup(data) : "";
     right.innerHTML = html + auditMarkup();
     if (data) {
       hydrateAudio(data, hid, loopId);
+      hydrateGate(data, hid, loopId);
       hydrateCookedPanel(data, hid, loopId);
     }
     refreshAudit(hid);
+  }
+
+  // -- the spend gate --------------------------------------------------
+  //
+  // Only rendered above the green tier. Green spends unattended by design,
+  // so showing an Approve button for it would misrepresent what the system
+  // actually does.
+
+  function gateMarkup(data) {
+    if (data.tier === "green" || !data.approval_request_id) { return ""; }
+    var html = '<div class="panel" id="gate-panel">';
+    html += "<h2>This needs a person</h2>";
+    html += '<p class="sub" style="margin-bottom:16px">' + esc(data.tier_reason) + "</p>";
+    html += '<div class="money"><span>Basket</span><b>' + money(data.amount_inr) + "</b></div>";
+    html += '<div class="money"><span>Provider</span><b>' + esc(data.chosen_provider || "—") + "</b></div>";
+    html += '<div class="money"><span>Tier</span><b>' + esc(data.tier) + "</b></div>";
+    html += '<div class="actions">' +
+            '<button id="gate-approve">Approve</button>' +
+            '<button id="gate-reject" class="ghost">Reject</button>' +
+            '<button id="gate-execute" class="ghost" disabled>Execute order</button>' +
+            '<span id="gate-note" class="note"></span></div>';
+    // The refusal is the most interesting thing this system does, so it gets
+    // a deliberate way to be triggered rather than only happening by accident.
+    html += '<details class="sec"><summary>Change the basket after approving</summary>' +
+            '<p class="note">Re-plans this same loop. The approval keeps the amount it was ' +
+            "granted for, so executing afterwards is refused as stale rather than spending " +
+            "against a figure nobody agreed to.</p>" +
+            '<div class="actions"><button id="gate-replan" class="ghost">Re-plan this loop</button></div>' +
+            "</details>";
+    return html + "</div>";
+  }
+
+  function hydrateGate(data, hid, loopId) {
+    var panel = $("gate-panel");
+    if (!panel) { return; }
+    var note = $("gate-note");
+    var approve = $("gate-approve"), reject = $("gate-reject");
+    var execute = $("gate-execute"), replan = $("gate-replan");
+
+    async function decide(approved) {
+      approve.disabled = true;
+      reject.disabled = true;
+      note.className = "note";
+      note.innerHTML = '<span class="spinner"></span> Recording…';
+      try {
+        var response = await fetch(
+          "/api/households/" + hid + "/approvals/" + data.approval_request_id + "/decide",
+          {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({ approved: approved, reason: "decided from the demo console" })
+          }
+        );
+        if (!response.ok) { throw new Error(await detail(response)); }
+        note.textContent = approved ? "Approved." : "Rejected.";
+        execute.disabled = !approved;
+      } catch (error) {
+        approve.disabled = false;
+        reject.disabled = false;
+        note.innerHTML = '<span class="err">' + esc(error.message) + "</span>";
+      }
+      refreshAudit(hid);
+    }
+
+    approve.addEventListener("click", function () { decide(true); });
+    reject.addEventListener("click", function () { decide(false); });
+
+    execute.addEventListener("click", async function () {
+      execute.disabled = true;
+      note.className = "note";
+      note.innerHTML = '<span class="spinner"></span> Executing…';
+      try {
+        // No amount and no tier: the server reads the basket it priced onto
+        // this loop. Sending them would be ignored.
+        var response = await fetch(
+          "/api/households/" + hid + "/loops/" + loopId + "/execute-order",
+          { method: "POST", headers: headers() }
+        );
+        var body = await response.json();
+        if (!response.ok) {
+          // A refusal here is the system working, not the demo breaking.
+          note.innerHTML = '<span class="err">Refused:</span> ' + esc(body.detail);
+        } else if (body.executed) {
+          note.textContent = "Paid. Reference " + body.reference;
+        } else {
+          note.innerHTML = esc(body.reason);
+        }
+      } catch (error) {
+        note.innerHTML = '<span class="err">' + esc(error.message) + "</span>";
+      }
+      refreshAudit(hid);
+    });
+
+    if (replan) {
+      replan.addEventListener("click", async function () {
+        replan.disabled = true;
+        note.className = "note";
+        note.innerHTML = '<span class="spinner"></span> Re-planning…';
+        try {
+          var response = await fetch("/api/households/" + hid + "/loops/" + loopId + "/plan", {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({
+              servings: Number($("servings").value),
+              guests: Number($("guests").value),
+              available_minutes: Number($("minutes").value)
+            })
+          });
+          if (!response.ok) { throw new Error(await detail(response)); }
+          var replanned = await response.json();
+          var moved = Number(replanned.amount_inr) !== Number(data.amount_inr);
+          note.innerHTML = moved
+            ? "Basket moved from " + money(data.amount_inr) + " to " + money(replanned.amount_inr) +
+              ". Executing now should be refused as stale."
+            : "The basket priced the same (" + money(replanned.amount_inr) +
+              "), so the approval is not stale and executing will still work.";
+          execute.disabled = false;
+        } catch (error) {
+          replan.disabled = false;
+          note.innerHTML = '<span class="err">' + esc(error.message) + "</span>";
+        }
+        refreshAudit(hid);
+      });
+    }
   }
 
   // -- event log -------------------------------------------------------

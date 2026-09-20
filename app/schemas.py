@@ -21,6 +21,20 @@ class HouseholdUpdate(HouseholdCreate):
     pass
 
 
+class BudgetRead(APIModel):
+    """A budget as served, carrying the derived figure rather than leaving
+    every caller to subtract for itself. See app.services.remaining_budget."""
+
+    id: int | None = None
+    household_id: int
+    monthly_limit: float
+    spent_amount: float
+    planned_amount: float
+    category_allocations: dict[str, float] = {}
+    # None means no budget constraint at all, which is different from zero.
+    remaining_inr: float | None = None
+
+
 class HouseholdSummary(APIModel):
     """What GET /households returns, and deliberately all it returns.
 

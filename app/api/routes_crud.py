@@ -38,6 +38,7 @@ from app.models import (
 )
 from app.repositories import Repository
 from app.schemas import (
+    BudgetRead,
     BudgetWrite,
     CaptureCandidate,
     CapturePreview,
@@ -53,6 +54,7 @@ from app.schemas import (
     MemberCreate,
     PreferenceCreate,
 )
+from app.services import remaining_budget
 from app.settings import Settings, get_settings
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -278,11 +280,30 @@ def upsert_budget(household_id: int, payload: BudgetWrite, session: Session = De
 
 
 @router.get("/households/{household_id}/budget")
-def get_budget(household_id: int, session: Session = Depends(get_db_session)) -> Budget:
+def get_budget(household_id: int, session: Session = Depends(get_db_session)) -> BudgetRead:
+    """The stored budget plus the one figure everyone actually wants.
+
+    `remaining_inr` is served rather than left to the caller on purpose. It
+    comes from app.services.remaining_budget, the single definition the tier
+    classifier, the procurement consolidator and the model's prompt context
+    all use. Four copies of that subtraction had already accumulated once,
+    which meant the model could be shown a different remaining budget than
+    the gate enforced; a client computing its own would be the next copy, and
+    the one a reader would be looking at while judging the gate's decision.
+    """
     rows = Repository(Budget, session).list_for_household(household_id)
     if not rows:
         raise HTTPException(404, "No budget set for this household")
-    return rows[0]
+    budget = rows[0]
+    return BudgetRead(
+        id=budget.id,
+        household_id=budget.household_id,
+        monthly_limit=budget.monthly_limit,
+        spent_amount=budget.spent_amount,
+        planned_amount=budget.planned_amount,
+        category_allocations=budget.category_allocations,
+        remaining_inr=remaining_budget(budget),
+    )
 
 
 @router.post("/households/{household_id}/preferences", status_code=201)
