@@ -129,6 +129,40 @@ def _classify_tier(container: Container, amount_inr: float, budget: Budget | Non
     )
 
 
+def _record_tool_refusal(
+    session: Session, household_id: int, loop_id: int | None, exc: ToolCallRefused
+) -> None:
+    """Every refusal becomes exactly one audit row, at the point of refusal.
+
+    `registry.blocked_calls` is in-process, per-worker, unbounded and lost on
+    restart -- useful to assert against in a unit test, useless as a record.
+    This is the record, and it is the only one, which is why the three call
+    sites all go through here rather than each deciding what to write.
+
+    They previously did decide separately, and two got it wrong: the cook
+    brief wrote nothing at all, so a refused brief left no trace; and the
+    audio endpoint filed refusals as `recipe_audio_failed`, which
+    app/providers/observability.py does not count as a refusal, so every
+    voice-cap refusal was invisible to the weekly reflection's blocked_actions
+    figure.
+
+    Deliberately not a callback injected into ToolRegistry: the registry is
+    the security chokepoint, and giving it a database dependency would hand
+    it a new failure mode -- a DB error inside a gate -- that it does not
+    have today. It also has no session and no request scope, and several of
+    its gate contexts carry no household_id to file a row under.
+    """
+    session.add(
+        AuditEvent(
+            household_id=household_id,
+            meal_loop_id=loop_id,
+            event="tool_call_refused",
+            detail=str(exc)[:400],
+        )
+    )
+    session.commit()
+
+
 def _latest_approval(session: Session, household_id: int, loop_id: int) -> ApprovalRequest | None:
     """The most recent approval request for a loop, or None.
 
@@ -579,8 +613,7 @@ def execute_order(household_id: int, loop_id: int, session: Session = Depends(ge
             tier,
         )
     except ToolCallRefused as exc:
-        session.add(AuditEvent(household_id=household_id, meal_loop_id=loop_id, event="tool_call_refused", detail=str(exc)))
-        session.commit()
+        _record_tool_refusal(session, household_id, loop_id, exc)
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
 
     if connection is not None:
@@ -617,6 +650,7 @@ def send_cook_brief(household_id: int, loop_id: int, dish_name: str, instruction
             skill_level=cook.skill_level,
         )
     except ToolCallRefused as exc:
+        _record_tool_refusal(session, household_id, loop_id, exc)
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
 
     session.add(AuditEvent(household_id=household_id, meal_loop_id=loop_id, event="cook_brief_sent", detail=f"language={brief.language}"))
@@ -733,7 +767,11 @@ def get_recipe_audio(
                     )
                 )
         except ToolCallRefused as exc:
+            # Both rows, deliberately: they say different things. One is "the
+            # briefing did not happen", the other is "a tool was refused",
+            # and only the second is what an audit of refusals should find.
             _record_audio_failure(session, household_id, loop_id, f"refused: {exc.reason}")
+            _record_tool_refusal(session, household_id, loop_id, exc)
             raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
         except VoiceSynthesisUnavailable as exc:
             # Not a failure: the zero-credential build working as designed.
@@ -935,6 +973,37 @@ def capture_outcome(household_id: int, loop_id: int, payload: OutcomeCapture, se
         raise
 
     return {"status": "completed", "loop_id": loop_id, "deducted": deducted, "skipped": skipped}
+
+
+@router.get("/households/{household_id}/audit")
+def list_audit_events(
+    household_id: int,
+    limit: int | None = None,
+    session: Session = Depends(get_db_session),
+) -> list[AuditEvent]:
+    """The household's event trail, newest first.
+
+    Every meaningful decision in this system already writes one of these --
+    recipe_generated, approval_decided, execution_refused, tool_call_refused,
+    order_executed, loop_closed, loop_unclosed -- and until now nothing could
+    read them back. The unclosed-loop sweep writes a row on every run
+    specifically so that a sweep which has silently stopped running is
+    detectable by the gap it leaves, which only works if someone can look.
+
+    Ordering falls back to id because created_at has second granularity and
+    several handlers write two rows inside one request; without it their
+    order within that request is arbitrary.
+    """
+    settings = get_container().settings
+    limit = min(limit or settings.audit_feed_default_limit, settings.audit_feed_max_limit)
+    return list(
+        session.exec(
+            select(AuditEvent)
+            .where(AuditEvent.household_id == household_id)
+            .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+            .limit(limit)
+        )
+    )
 
 
 @router.get("/households/{household_id}/reflection/weekly")

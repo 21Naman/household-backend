@@ -228,6 +228,7 @@
       return '<option value="' + esc(row.id) + '">' + esc(row.name) + "</option>";
     }).join("");
     refreshLeft();
+    renderRight(null, selectedHousehold(), null);
   }
 
   // -- left pane: the household, in two clearly separated halves --------
@@ -382,9 +383,50 @@
   // the bug that existed when the audio guard lived inline in render().
 
   function renderRight(data, hid, loopId) {
-    right.innerHTML = recipeMarkup(data) + cookedPanelMarkup(data);
-    hydrateAudio(data, hid, loopId);
-    hydrateCookedPanel(data, hid, loopId);
+    // `data` is null before a recipe exists: the event log still renders, so
+    // a reader can watch the trail from the first click rather than after it.
+    var html = data ? recipeMarkup(data) + cookedPanelMarkup(data) : "";
+    right.innerHTML = html + auditMarkup();
+    if (data) {
+      hydrateAudio(data, hid, loopId);
+      hydrateCookedPanel(data, hid, loopId);
+    }
+    refreshAudit(hid);
+  }
+
+  // -- event log -------------------------------------------------------
+  //
+  // Every decision this system makes already writes an audit row. The log is
+  // the difference between a refusal being correct and a refusal being
+  // visible.
+
+  function auditMarkup() {
+    return '<div class="panel"><div class="sec"><h3>Event log</h3>' +
+           '<div id="audit">' + '<p class="note">—</p>' + "</div></div></div>";
+  }
+
+  var REFUSAL_EVENTS = ["tool_call_refused", "execution_refused", "loop_unclosed"];
+
+  async function refreshAudit(hid) {
+    var slot = $("audit");
+    if (!slot || hid === null) { return; }
+    try {
+      var events = await getJSON("/api/households/" + hid + "/audit");
+    } catch (error) {
+      slot.innerHTML = '<p class="note">' + esc(error.message) + "</p>";
+      return;
+    }
+    if (!events.length) {
+      slot.innerHTML = '<p class="note">Nothing recorded yet.</p>';
+      return;
+    }
+    slot.innerHTML = events.map(function (e) {
+      var refusal = REFUSAL_EVENTS.indexOf(e.event) !== -1;
+      return '<div class="signal"><b' + (refusal ? ' class="tag-strong"' : "") + ">" +
+             esc(e.event) + "</b> " + '<span class="when">' +
+             esc(String(e.created_at).replace("T", " ").slice(0, 19)) + "</span><br />" +
+             '<span class="tags">' + esc(e.detail) + "</span></div>";
+    }).join("");
   }
 
   function recipeMarkup(data) {
@@ -563,6 +605,7 @@
         note.textContent = "";
         showDeductions(panel, body.deducted, body.skipped);
         refreshLeft();
+        refreshAudit(hid);
       } catch (error) {
         submit.disabled = false;
         note.innerHTML = '<span class="err">' + esc(error.message) +
@@ -607,7 +650,10 @@
   }
 
   goBtn.addEventListener("click", generate);
-  householdSel.addEventListener("change", function () { right.innerHTML = ""; refreshLeft(); });
+  householdSel.addEventListener("change", function () {
+    renderRight(null, selectedHousehold(), null);
+    refreshLeft();
+  });
   // A 401 before a key is typed is the expected first state on a deployed
   // instance, so the picker retries itself instead of demanding a reload.
   $("apikey").addEventListener("change", function () {

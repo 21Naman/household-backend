@@ -239,6 +239,11 @@ class Settings(BaseSettings):
     recipe_min_stocked_ingredient_ratio: float = Field(default=0.60, ge=0, le=1)
     # How often the unclosed-loop sweep runs.
     unclosed_sweep_interval_seconds: int = Field(default=3600, gt=0)
+    # How many audit rows the event feed returns, and the ceiling a caller
+    # may ask for. The cap exists because the feed is polled after every
+    # action on a page that stays open.
+    audit_feed_default_limit: int = Field(default=50, gt=0)
+    audit_feed_max_limit: int = Field(default=200, gt=0)
 
     def is_public_deployment(self) -> bool:
         """True when this process is reachable from outside localhost.
