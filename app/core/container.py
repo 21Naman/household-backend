@@ -59,7 +59,14 @@ def build_container(settings: Settings | None = None) -> Container:
     commerce_second = CommerceMockProvider(provider_name=settings.commerce_second_provider_name)
     payments = MockPaymentProvider()
     logistics = MockLogisticsProvider()
-    voice = _build_voice(settings, model_provider)
+    # Cook briefs go through the same Groq/Gemini/Ollama chain as recipe
+    # generation and the audio rewrite. The old rule was Ollama-only, which
+    # made sense when Ollama was a real process on the same machine; on a
+    # cloud deployment with no local model it meant this one endpoint
+    # silently degraded to a templated line while every other model path
+    # failed over properly. Both providers expose the same
+    # generate_structured(prompt, schema) signature.
+    voice = _build_voice(settings, recipe_model_provider)
 
     registry = ToolRegistry(daily_synthesis_limit=settings.gnani_daily_synthesis_limit)
     registry.register(ToolKind.COMMERCE, zepto)

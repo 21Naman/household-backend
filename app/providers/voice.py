@@ -31,6 +31,7 @@ import wave
 from dataclasses import dataclass
 
 from app.enums import Language
+from app.providers.model_failures import RecipeProviderOperationalError
 
 _BRIEF_SCHEMA = {
     "type": "object",
@@ -62,6 +63,11 @@ class CookBrief:
     language: str
     audio: bytes | None = None
     language_mismatch_flagged: bool = False
+    # True when the text is the templated fallback rather than a written
+    # brief. Reported rather than hidden: a templated line and a generated
+    # one are indistinguishable to read, and a caller shown one while
+    # believing it got the other has been misled by omission.
+    degraded: bool = False
 
 
 class LocalVoiceProvider:
@@ -99,11 +105,28 @@ class LocalVoiceProvider:
             f"Dish: {dish_name}\nInstructions/substitutions to convey: {instructions}\n\n"
             'Return JSON: {"brief": "<the message to the cook, in ' + language + '>"}'
         )
+        templated = f"[{language}, {skill_level}] {dish_name}: {instructions}"
+
+        if self.model_provider is None:
+            # The deliberate no-model construction several callers use. A
+            # template is the correct answer here, not an error.
+            return CookBrief(text=templated, language=language, audio=None, degraded=True)
+
         try:
             result = self.model_provider.generate_structured(prompt, schema=_BRIEF_SCHEMA)
             text = result["brief"]
-        except Exception:
-            text = f"[{language}, {skill_level}] {dish_name}: {instructions}"
+        except RecipeProviderOperationalError:
+            # Every leg of the chain is unconfigured or unreachable -- the
+            # zero-credential offline build working as designed, which this
+            # project treats as a normal state rather than a failure. Degrade,
+            # but say so: this used to be a bare `except Exception`, which
+            # also swallowed a KeyError on a malformed response and a
+            # TypeError from a broken provider, returning a template as a 200
+            # in every case. A model answering wrongly is a bug, and the
+            # docstring four lines above transcribe() says exactly why that
+            # must not be quietly absorbed.
+            text = templated
+            return CookBrief(text=text, language=language, audio=None, degraded=True)
 
         # audio stays None: no audio synthesis library is wired in for BUILD
         # IT, so text is the guaranteed channel (Ticket #25's watch-out).

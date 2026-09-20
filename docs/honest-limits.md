@@ -207,3 +207,60 @@ writing (submission Q2) — the Bible itself names this as the single
 biggest risk to the submission. No amount of engineering rigor in this
 codebase substitutes for that; it's listed here because pretending
 otherwise would undercut everything else in this document.
+
+## What changes when this runs in the cloud
+
+The deployed instance is a free Hugging Face Space. Everything below is true
+of that deployment and not of a local run, and none of it is visible from the
+UI, so it is written down here instead.
+
+**Two model legs, not three.** `RoundRobinRecipeProvider` alternates Groq and
+Gemini and falls back to a local Ollama model. There is no Ollama in the
+Space, so that third leg is dead there: if both remote providers fail or are
+rate-limited, recipe generation returns 503 and there is no local backstop.
+The three-leg chain is a property of the local build. Cook briefs now go
+through the same chain, so they degrade to a templated line — and say so, via
+`degraded` in the response and in the `cook_brief_sent` audit row — rather
+than returning a template that reads like a written brief.
+
+**The database is ephemeral.** `data/*.db` is gitignored and nothing tracks
+it, so the image ships with no database at all and the container filesystem
+does not persist. Every restart is a fresh database, seeded at startup. Loop
+ids, approval rows and audit events created before a restart do not survive
+it. This is the honest reason the reseed job exists rather than a nicety.
+
+**The demo data is restored on a schedule.** `app/demo_seed.py::refresh_or_create`
+runs at startup and every six hours. It restores seeded rows in place — it
+never deletes, so ids stay stable and rows a reader added themselves survive —
+which means inventory deducted by pressing "I cooked this" comes back at the
+next refresh. Without it, `InventoryLot.updated_at` would age past
+`inventory_recency_window_hours` and `effective_freshness` would mark the whole
+kitchen STALE, at which point recipe generation starts failing the availability
+check for no visible reason. The alternative — widening the recency window for
+the deployed instance — was rejected: that window is a food-safety rule, and
+weakening it to avoid an error screen is the kind of shortcut this document
+exists to not take.
+
+**The audio cache, the synthesis counter and the scheduler are all
+per-process, and all restart empty.** A free Space sleeps after roughly 48
+hours idle and is rebuilt on the next request. So: `audio_id`s minted before
+the sleep return 404 after it (with a message saying to generate the recipe
+again); the Gnani daily synthesis cap resets to zero; and both the
+unclosed-loop sweep and the reseed job restart their intervals from scratch.
+
+**The Gnani daily cap is per-process, not global.** `ToolRegistry._synthesis_counts`
+is a dictionary in memory. With one worker the cap is real. With more than one
+it multiplies by the worker count, and any restart resets it. A genuine global
+ceiling needs a shared counter and has not been built.
+
+**The API key is a demo credential.** It is published so reviewers can use the
+API, and it protects a demo database that is rebuilt every few hours. It stops
+a crawler; it is not a security control. What it does do is keep Ticket #7's
+guarantee honest — the app refuses to start as a public deployment with no key
+configured at all.
+
+**The unclosed-loop sweep needs six hours to say anything.** `loop_unclosed_timeout_hours`
+is 6 and the sweep runs hourly, so a loop abandoned mid-demo is flagged
+`UNCLOSED` six hours later, visible in the event log. Shortening the timeout to
+make it fire during a session was rejected for the same reason as the freshness
+window.

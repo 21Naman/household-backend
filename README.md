@@ -1,3 +1,13 @@
+---
+title: Aaj Kya Banega
+emoji: 🍲
+colorFrom: orange
+colorTo: red
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Household Orchestration Agent — Backend
 
 Built directly against `build-map.md`, phase by phase, ticket by ticket, no
@@ -6,7 +16,7 @@ per-ticket write-ups the build map asked for.
 
 ## Status at a glance
 
-- **118 tests passing, 3 skipped** (the 3 require live AWS credentials this
+- **235 tests passing, 3 skipped** (the 3 require live AWS credentials this
   environment doesn't have — see below). **100% branch coverage on
   `app/services.py`**, the deterministic decision core.
 - **Phases 0–3 (BUILD IT) are fully built, tested, and runnable end to end
@@ -39,6 +49,32 @@ python -m app.main            # serves on 127.0.0.1:8000
 ```
 
 Interactive API docs: `http://127.0.0.1:8000/docs`.
+
+To demo against furnished households rather than an empty database:
+
+```bash
+python scripts/seed_demo_households.py            # create anything missing
+python scripts/seed_demo_households.py --refresh  # restore existing rows in place
+```
+
+## Deploying it
+
+The `Dockerfile` targets a Hugging Face Space on the free CPU tier, chosen
+because a free Space sleeps after ~48h idle rather than ~15 minutes — the
+audio cache, the Gnani synthesis counter and the scheduler all live in
+process memory, and the unclosed-loop sweep needs a loop to have been open
+for six hours before it has anything to say.
+
+Set one Space secret, `HOUSEHOLD_API_KEY`, and give reviewers the value; the
+demo page has a field for it. Everything else the container needs is in the
+Dockerfile. `GROQ_API_KEY` and `GEMINI_API_KEY` are optional but strongly
+wanted: there is no Ollama in the Space, so without them recipe generation
+has no working provider at all.
+
+**With `HOUSEHOLD_PUBLIC_DEPLOYMENT=true` and no API key the container
+refuses to start.** That is Ticket #7 working, not a misconfiguration — see
+`docs/honest-limits.md` for what else differs in the cloud, including that
+the database is ephemeral and the demo data is restored every six hours.
 
 ## Testing
 

@@ -1,0 +1,21 @@
+# Keep the image to the application and its migrations. The database in
+# particular must not be copied in: the deployed instance seeds its own on
+# startup, and a stale committed copy would silently replace it.
+.venv/
+venv/
+data/
+tests/
+docs/
+scripts/
+.git/
+.github/
+.pytest_cache/
+.coverage
+htmlcov/
+.env
+*.md
+!requirements.txt
+__pycache__/
+*.py[cod]
+.agents/
+.claude/

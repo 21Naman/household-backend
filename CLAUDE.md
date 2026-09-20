@@ -19,8 +19,9 @@ write-ups (`aws-gate-evidence.md`, `demo-script.md`, `honest-limits.md`,
 pip install -r requirements-dev.txt   # app deps + pytest/pytest-cov
 cp .env.example .env                  # optional — every setting has a safe default
 python -m app.main                    # serve on 127.0.0.1:8000 (docs at /docs)
+python scripts/seed_demo_households.py --refresh   # demo households, restored in place
 
-pytest                                          # full suite (172 passed, 3 skipped without live AWS creds)
+pytest                                          # full suite (235 passed, 3 skipped without live AWS creds)
 pytest tests/test_services.py                   # single file
 pytest tests/test_services.py::test_name -v     # single test
 pytest --cov=app --cov-report=term-missing      # coverage breakdown
@@ -78,15 +79,31 @@ or spend authority.
 any tool (voice, logistics, payments, commerce) gets invoked. A model
 response may *request* a tool; it never invokes one directly. Every
 `registry.invoke(kind, method, context, ...)` call passes through a
-deterministic gate predicate before the underlying provider is touched
-(e.g. payments only fires when `tier == GREEN` and a deterministic budget
-check already passed). The gate receives the `method` as well as the
+deterministic gate predicate before the underlying provider is touched.
+Payments require a passing deterministic budget check at every tier, and
+then either `tier == GREEN` (which spends unattended by design) or an
+explicit `human_approval_verified` that only the route layer sets, and only
+after `check_execution_authorized` confirmed an APPROVED request whose
+recorded amount still matches the basket in hand. That flag is read with
+`.get()`, so a call site that does not assert it is refused rather than
+admitted. Before it existed the gate refused every non-green tier outright,
+which meant an approved order passed the approval check and was then blocked
+here — the approval gate had no path to a completed purchase at all. The
+gate receives the `method` as well as the
 context, because some gates care which method is being called: a voice
 *reply* is free, a voice *synthesis* spends Gnani credits and is capped per
 household per day (`gnani_daily_synthesis_limit`) — a call that spends
 vendor credits is spend, and goes through this chokepoint like every other
-kind. Refusals raise `ToolCallRefused` and are also logged
-to `registry.blocked_calls` for audit — treat this module as security-relevant.
+kind. Refusals raise `ToolCallRefused`. `registry.blocked_calls` keeps an
+in-process copy, which is useful to assert against in a unit test and is not
+a record: it is per-worker, unbounded and lost on restart. The durable trail
+is a `tool_call_refused` `AuditEvent`, written by
+`app/api/routes.py::_record_tool_refusal` at every site that catches the
+exception — readable through `GET /households/{id}/audit`, and named that way
+because `app/providers/observability.py` counts blocked actions by event
+name. The registry deliberately does not write these itself: it is the
+security chokepoint, and a database dependency would give it a failure mode
+inside a gate that it does not have. Treat this module as security-relevant.
 Never call a provider directly from a route handler or from `app/services.py`.
 
 ## Approval gate fails closed
@@ -105,6 +122,19 @@ out in the README as the two tickets that matter most.
 `HOUSEHOLD_API_KEY` only if that setting is configured. `app/main.py::run()`
 refuses to bind to a non-loopback host with no API key set (Ticket #7) — this
 is intentional and shouldn't be "fixed" by relaxing the check.
+
+That check alone protected nothing on a real deployment: `run()` executes only
+under `python -m app.main`, and every hosting platform starts the app as
+`uvicorn app.main:app`, which imports the module and skips it. The lifespan
+handler in `app/main.py` therefore also refuses to start when
+`Settings.is_public_deployment()` is true and no API key is configured. The
+posture is **declared** (`HOUSEHOLD_PUBLIC_DEPLOYMENT`, or an inferred
+`SPACE_ID`) rather than detected, because when uvicorn is started externally
+the application cannot observe which socket was bound — and a guard that
+silently fails to fire is worse than no guard. It lives in the lifespan rather
+than at module scope because module scope runs once per import and could never
+be exercised by a test. Default false, so local development and the test suite
+are untouched.
 
 ## Settings and mocks
 
@@ -166,7 +196,10 @@ timeout are all named settings (`spend_tier_green_ceiling_inr`,
 `delivery_deadline_minutes`, `recipe_min_stocked_ingredient_ratio`,
 `unclosed_sweep_interval_seconds`, `gnani_tts_max_chars`,
 `gnani_daily_synthesis_limit`, `recipe_audio_ttl_seconds`,
-`recipe_audio_cache_max_entries`) — never hardcode these values inline.
+`recipe_audio_cache_max_entries`, `port`, `public_deployment`,
+`demo_seed_on_startup`, `demo_reseed_interval_seconds`,
+`audit_feed_default_limit`, `audit_feed_max_limit`) — never hardcode these
+values inline.
 The language and voice tables (`gnani_language_map`, `gnani_voice_map`,
 `gnani_default_language`) live there too, so a household can be retargeted at
 a different voice without a code change, as does the whole Gnani
@@ -197,8 +230,16 @@ remaining budget; one correction request is allowed before returning `422`.
 This is a separate endpoint from the original deterministic `/plan`, which
 still makes no model call — but the two share pricing, delivery-scoring,
 tiering and approval logic (see "Data access" below), so a change to one of
-those shared helpers affects both. Ollama remains the provider for cook
-briefs regardless.
+those shared helpers affects both. Cook briefs go through the same
+`RoundRobinRecipeProvider` chain (`app/core/container.py` injects it into
+`_build_voice`). The old Ollama-only rule made sense when Ollama was a local
+process; on a cloud deploy with no local model it meant that one endpoint
+silently degraded while every other model path failed over. When every leg is
+unreachable the brief degrades to a templated line and reports `degraded:
+true` — a template reads exactly like a written brief, so a caller that is not
+told cannot distinguish them. Only `RecipeProviderOperationalError` degrades;
+a malformed model response propagates, because that is a bug, not an offline
+build.
 
 ## Audio briefing — synthesis happens at fetch time, not at generation
 
@@ -258,10 +299,61 @@ English or transliterate "pressure cooker" into Devanagari.
 bounded by TTL and entry count, never in the database — an MP3 of a recipe
 read aloud is the recipe in a lossier container, so persisting one would
 break the never-persist invariant in substance. Reads re-check household and
-loop even though the id is opaque, because this system has no
-cross-household read path anywhere else. The cache and the registry's daily
+loop even though the id is opaque, because the only cross-household read
+path in this system is the deliberate, narrowed one described under "Data
+access". The cache and the registry's daily
 synthesis counter are both **per-process**; they move to a shared store
 together when this is deployed multi-worker (`docs/honest-limits.md`).
+
+## The spend gate takes nothing from the caller
+
+`execute_order` accepts a household and a loop, and no amount and no tier.
+Both used to be query parameters, which meant the gate validated figures the
+caller had chosen: `?tier=green` made `check_execution_authorized` return
+early on "green tier executes without approval" without ever looking for an
+approval row, and `budget_check_passed` was hardcoded `True` beside it. Both
+now come from `MealLoopRecord.quoted_amount_inr` / `quoted_tier`, written by
+the shared `_record_plan_outcome` on **every** plan at **every** tier — an
+`ApprovalRequest` is only created above green, so before those columns a
+green loop's priced basket existed nowhere on the server. A loop with no
+recorded basket is refused with `409`, never defaulted to zero.
+`budget_check_passed` is computed from `services.remaining_budget`.
+
+Re-planning a loop updates the existing `ApprovalRequest` rather than adding
+another, and never touches `status` or `approved_amount_inr` — those are the
+human's decision and the snapshot the stale-basket check compares against.
+That is what makes the stale-approval refusal reachable: change the basket
+after approving and execution is refused with the two amounts named.
+
+## Demo data
+
+`app/demo_seed.py` holds the three demo households and both ways of writing
+them. It lives under `app/` rather than in `scripts/` because `app/main.py`
+seeds and refreshes on a deployed instance and `scripts/` is not an
+importable package; `scripts/seed_demo_households.py` is a thin CLI over it.
+
+`seed()` creates a household that does not exist. `refresh_or_create()`
+restores one that does, **in place** — matching rows on a natural key and
+updating them, never deleting — so household, member, loop, approval and
+audit ids all survive and someone mid-session is not broken. It is the only
+place that deliberately pushes `InventoryLot.updated_at` forward, which reads
+like a contradiction of the seed path's "do not backdate it" comment and is
+the opposite: without it the demo kitchen ages past
+`inventory_recency_window_hours` and reads STALE.
+
+The spec dicts are **read-only**. The reseed job calls into them repeatedly
+inside one process, so a `.pop()` works once and then raises `KeyError`; read
+optional keys with `.get()`. Dates come from `days(n, today)` rather than a
+module-level `TODAY` evaluated at import, for the same reason.
+
+Each household carries one deliberately expired preference signal. Expiry is
+otherwise correct but invisible, because the refresh keeps pushing live
+signals forward — the expired one is what lets a reader see the rule fire.
+Expiry belongs on event-shaped signals only; identity and constraint signals
+(a cook's skill level, a standing dietary need) never expire, and the
+underlying fact also lives on `HouseholdMember.health_constraints`. That
+duplication is deliberate: the member field is the fact, the signal is the
+narrative with provenance.
 
 ## Typed vocabulary
 
@@ -292,8 +384,17 @@ other, which is a bug that existed when the audio guard lived inline. The v1 `/p
 `_record_approval_if_needed` so the two paths cannot drift apart on pricing,
 delivery scoring, thresholds, or when approval is demanded.
 
-All queries are household-scoped through `app/repositories.py` — there is no
-cross-household read path. `app/models.py` defines the SQLModel tables;
+All queries are household-scoped through `app/repositories.py`. There is
+exactly one cross-household read path, deliberately: `GET /api/households` in
+`routes_crud.py` returns `[{id, name}]` and nothing else, so the demo UI can
+offer a picker instead of making someone guess integer ids. It is a standalone
+`select` rather than a `Repository` method specifically so the repository
+layer keeps refusing unscoped reads for every other model, and it returns a
+projection (`HouseholdSummary`) rather than the row, so `default_language` and
+`created_at` stay unexposed. `GET /households/{id}/context` is household-scoped
+and serves the household-memory half of the model prompt, built by
+`app/core/household_context.py` so the page cannot claim the model saw
+something it did not; it carries no budget and no inventory. `app/models.py` defines the SQLModel tables;
 schema changes go through Alembic migrations in `alembic/versions/`, not
 manual `SQLModel.metadata.create_all` edits (that pattern is only used in
 test fixtures, e.g. `tests/conftest.py`, against an in-memory SQLite engine).

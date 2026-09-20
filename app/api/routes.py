@@ -653,9 +653,18 @@ def send_cook_brief(household_id: int, loop_id: int, dish_name: str, instruction
         _record_tool_refusal(session, household_id, loop_id, exc)
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
 
-    session.add(AuditEvent(household_id=household_id, meal_loop_id=loop_id, event="cook_brief_sent", detail=f"language={brief.language}"))
+    session.add(
+        AuditEvent(
+            household_id=household_id,
+            meal_loop_id=loop_id,
+            event="cook_brief_sent",
+            detail=f"language={brief.language} degraded={brief.degraded}",
+        )
+    )
     session.commit()
-    return {"text": brief.text, "language": brief.language}
+    # `degraded` is reported, not hidden: a templated brief reads exactly like
+    # a written one, so without it a caller cannot tell which it received.
+    return {"text": brief.text, "language": brief.language, "degraded": brief.degraded}
 
 
 def _stage_recipe_audio(container, session, household_id, loop_id, recipe, missing_payload) -> str | None:
