@@ -14,6 +14,53 @@ Built directly against `build-map.md`, phase by phase, ticket by ticket, no
 phase skipped. This README is the entry point; `docs/` carries the
 per-ticket write-ups the build map asked for.
 
+## For reviewers
+
+**The API key is in the submission notes.** Paste it into the field at the top
+of the page; it is remembered in your browser. Every `/api` route requires it,
+and the app refuses to start as a public deployment without one configured —
+that refusal is Ticket #7 and it is deliberate.
+
+**A two-minute path through it.** Pick a household from the dropdown — the
+left pane shows exactly what the model is told about them, and separately the
+budget and kitchen, which the model is *not* told. Each household carries one
+deliberately expired preference, struck through and labelled: the system knows
+it and does not act on it. Generate a recipe, press **Read it to me** for the
+spoken briefing, then **I cooked this** to watch the kitchen decrement. The
+event log records every step.
+
+The three households differ on purpose: **Sharma** is well stocked with room
+in the budget (the unremarkable path), **Iyer** has ₹350 left and an English-
+speaking cook against a Tamil household (spend pressure, and the voice
+fallback), **Khan** has a beginner cook and guests coming (register and
+occasion).
+
+**What is real and what is simulated.** Being precise about this, because
+guessing wrong in either direction misreads the project:
+
+| | |
+|---|---|
+| **Live external calls** | Groq and Gemini for recipe generation and the spoken rewrite. Gnani for text-to-speech — a real vendor API returning real MP3s, and the only live vendor rail here. |
+| **Mock-backed** | Zepto and the second commerce provider (pricing), Pine Labs (payments), Delhivery (logistics). They compute deterministic answers; no money moves and no order is placed. |
+| **Deliberately gated** | Pine Labs live mode raises `NotYetValidated` at construction, and Gnani speech-to-**text** refuses without an explicit acknowledgment — both because the build map marks them blocked on open research questions. Text-to-speech is not gated and does run. |
+
+The startup log says the same thing in its own words: *"Active mocks: zepto,
+commerce_second_provider, pinelabs, delhivery — do not present these as live
+to a judge."*
+
+**Three things that are easy to miss.** The spend gate fails closed and
+re-checks at execution time, so approving a basket and then changing it is
+refused rather than spent — the demo has a button that triggers exactly that.
+`execute-order` takes no amount and no tier from the caller; both come from a
+basket the server priced, because accepting them meant the gate was validating
+numbers the caller chose. And a recipe deduction across units it cannot
+convert is reported, not guessed at.
+
+**What this deployment does not do** is in [docs/honest-limits.md](docs/honest-limits.md):
+there is no local model behind the two remote ones here, the database is
+ephemeral and re-seeded every six hours, and the audio cache and daily
+synthesis cap are per-process.
+
 ## Status at a glance
 
 - **235 tests passing, 3 skipped** (the 3 require live AWS credentials this
