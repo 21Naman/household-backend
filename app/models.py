@@ -222,6 +222,23 @@ class ApprovalRequest(SQLModel, table=True):
     decided_at: datetime | None = None
 
 
+class InstamartCartSnapshot(SQLModel, table=True):
+    """What was put into the Instamart cart for a loop, and what the live cart
+    said back. The live cart can change on Swiggy's side afterwards; this is
+    the record of what this system did."""
+
+    __tablename__ = "instamart_cart_snapshots"
+    id: int | None = Field(default=None, primary_key=True)
+    household_id: int = Field(foreign_key="households.id", index=True)
+    meal_loop_id: int = Field(foreign_key="meal_loop_records.id", index=True)
+    selected_address_id: str = Field(max_length=128)
+    missing_ingredients_json: list[dict[str, Any]] = Field(sa_column=Column(JSON), default_factory=list)
+    matched_items_json: list[dict[str, Any]] = Field(sa_column=Column(JSON), default_factory=list)
+    unmatched_items_json: list[dict[str, Any]] = Field(sa_column=Column(JSON), default_factory=list)
+    live_cart_json: dict[str, Any] = Field(sa_column=Column(JSON), default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 class LocalTask(SQLModel, table=True):
     __tablename__ = "local_tasks"
     id: int | None = Field(default=None, primary_key=True)

@@ -18,6 +18,7 @@ from app.providers.ollama import OllamaProvider
 from app.providers.payments_mock import MockPaymentProvider
 from app.providers.recipe_model_chain import RoundRobinRecipeProvider
 from app.providers.groq_model import GroqModelProvider
+from app.providers.instamart_mcp import InstamartMCPProvider
 from app.core.recipe_audio_cache import RecipeAudioCache
 from app.providers.voice import LocalVoiceProvider
 from app.providers.voice_gnani import GnaniBackedVoiceProvider, GnaniVoiceProvider
@@ -37,6 +38,7 @@ class Container:
     scheduler: LocalScheduler
     zepto: ZeptoMCPProvider
     commerce_second: CommerceMockProvider
+    instamart: InstamartMCPProvider
     payments: MockPaymentProvider
     logistics: MockLogisticsProvider
     voice: LocalVoiceProvider
@@ -57,6 +59,7 @@ def build_container(settings: Settings | None = None) -> Container:
     )
     zepto = ZeptoMCPProvider(settings)
     commerce_second = CommerceMockProvider(provider_name=settings.commerce_second_provider_name)
+    instamart = InstamartMCPProvider(settings)
     payments = MockPaymentProvider()
     logistics = MockLogisticsProvider()
     # Cook briefs go through the same Groq/Gemini/Ollama chain as recipe
@@ -70,6 +73,7 @@ def build_container(settings: Settings | None = None) -> Container:
 
     registry = ToolRegistry(daily_synthesis_limit=settings.gnani_daily_synthesis_limit)
     registry.register(ToolKind.COMMERCE, zepto)
+    registry.register(ToolKind.INSTAMART, instamart)
     registry.register(ToolKind.PAYMENTS, payments)
     registry.register(ToolKind.LOGISTICS, logistics)
     registry.register(ToolKind.VOICE, voice)
@@ -82,6 +86,7 @@ def build_container(settings: Settings | None = None) -> Container:
         scheduler=LocalScheduler(),
         zepto=zepto,
         commerce_second=commerce_second,
+        instamart=instamart,
         payments=payments,
         logistics=logistics,
         voice=voice,

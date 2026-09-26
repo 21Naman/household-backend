@@ -214,6 +214,26 @@ model in its prompt context all call it. Never inline the
 of it had already accumulated, which meant the model could be told a
 different remaining budget than the gate enforced.
 
+## Instamart cart building (no checkout)
+
+`app/providers/instamart_mcp.py` talks to Swiggy Instamart's MCP server and
+is registered under its own `ToolKind.INSTAMART`, because the registry holds
+one provider per kind and Zepto already occupies `COMMERCE`. The gate allows
+only `INSTAMART_ALLOWED_METHODS` in `app/core/registry.py` (`get_addresses`,
+`search_products`, `update_cart`, `get_cart`, `clear_cart`); `checkout`,
+`confirm_order` and the payment tools are refused there, so ordering cannot
+be reached by name. Adding checkout means widening that allowlist behind the
+same approval gate `execute_order` uses — not calling the provider directly.
+
+`GET /households/{id}/instamart/addresses` feeds the address picker;
+`POST /households/{id}/loops/{loop_id}/instamart-cart` searches each missing
+ingredient, takes the first **in-stock** variant (never an out-of-stock one —
+it is reported as unmatched instead), replaces the account's cart with
+`update_cart`, reads it back with `get_cart`, and stores an
+`InstamartCartSnapshot`. When nothing matches, the account's cart is left
+untouched. The mock is the default (`instamart_mock_enabled`); the live rail
+needs `instamart_access_token` **and** the flag off.
+
 ## Recipe generation (v2)
 
 `POST /api/v2/households/{household_id}/loops/{loop_id}/recipe`
@@ -227,6 +247,14 @@ the model) if they exceed the time limit, have fewer than
 `recipe_min_stocked_ingredient_ratio` (default 60%) fully stocked
 purchasable ingredients, or the cheapest quoted missing basket exceeds
 remaining budget; one correction request is allowed before returning `422`.
+Leftovers are already-cooked dishes, so they go in the recipe's separate
+`leftovers_used` list and never in `ingredients` — an ingredient is checked
+against inventory only, so a leftover listed there reads as missing and gets
+priced and sent to Instamart. `_leftover_violations` in
+`app/core/recipe_planner.py` rejects an ingredient named as a leftover, and
+any reused leftover the household does not have, that has expired, or that
+is used beyond its portions. The "I cooked this" outcome does not yet
+reduce leftover portions.
 This is a separate endpoint from the original deterministic `/plan`, which
 still makes no model call — but the two share pricing, delivery-scoring,
 tiering and approval logic (see "Data access" below), so a change to one of

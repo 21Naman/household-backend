@@ -34,6 +34,14 @@ class ToolKind(str, Enum):
     LOGISTICS = "logistics"
     PAYMENTS = "payments"
     COMMERCE = "commerce"
+    INSTAMART = "instamart"
+
+
+# Cart building only. checkout, confirm_order and the payment tools place an
+# order or move money, and are refused here until that step is built and gated.
+INSTAMART_ALLOWED_METHODS = frozenset(
+    {"get_addresses", "search_products", "update_cart", "get_cart", "clear_cart"}
+)
 
 
 class ToolCallRefused(RuntimeError):
@@ -157,11 +165,19 @@ class ToolRegistry:
             return False, "commerce tool requires a household_id in context"
         return True, ""
 
+    def _gate_instamart(self, context: dict[str, Any], method: str) -> tuple[bool, str]:
+        if not context.get("household_id"):
+            return False, "instamart tool requires a household_id in context"
+        if method not in INSTAMART_ALLOWED_METHODS:
+            return False, f"instamart method {method!r} is not permitted; only cart building is enabled"
+        return True, ""
+
     _GATES: dict[ToolKind, str] = {
         ToolKind.VOICE: "_gate_voice",
         ToolKind.LOGISTICS: "_gate_logistics",
         ToolKind.PAYMENTS: "_gate_payments",
         ToolKind.COMMERCE: "_gate_commerce",
+        ToolKind.INSTAMART: "_gate_instamart",
     }
 
     def invoke(self, kind: ToolKind, method: str, context: dict[str, Any], *args, **kwargs) -> Any:

@@ -11,8 +11,10 @@ responsible for the small success-only audit record and approval workflow.
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from pydantic import ValidationError
@@ -23,7 +25,7 @@ from app.core.household_context import (
     partition_preference_signals,
 )
 from app.core.state_store import HouseholdState
-from app.models import Dish, InventoryLot, MealLoopRecord
+from app.models import Dish, InventoryLot, Leftover, MealLoopRecord
 from app.schemas import GeneratedRecipe, RecipeGenerationRequest
 from app.services import (
     MissingIngredient,
@@ -60,6 +62,19 @@ RECIPE_JSON_SCHEMA: dict[str, Any] = {
             },
         },
         "assumed_pantry_staples": {"type": "array", "maxItems": 20, "items": {"type": "string"}},
+        "leftovers_used": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "dish_name": {"type": "string"},
+                    "portions": {"type": "number", "minimum": 0.000001},
+                },
+                "required": ["dish_name", "portions"],
+            },
+        },
         "steps": {"type": "array", "minItems": 1, "maxItems": 15, "items": {"type": "string"}},
         "nutrition_notes": {"type": "array", "minItems": 1, "maxItems": 10, "items": {"type": "string"}},
     },
@@ -69,6 +84,7 @@ RECIPE_JSON_SCHEMA: dict[str, Any] = {
         "prep_minutes",
         "ingredients",
         "assumed_pantry_staples",
+        "leftovers_used",
         "steps",
         "nutrition_notes",
     ],
@@ -134,13 +150,19 @@ class RecipeGenerator:
             "assumed available. Do not include absent basics in purchasable ingredients; list "
             "them under assumed_pantry_staples. If a basic is explicitly in inventory and its "
             "quantity matters, you may use that inventory quantity.\n"
+            "- Leftovers are already-cooked dishes, not ingredients, and are never bought. To "
+            "reuse one, list it under leftovers_used with its dish_name exactly as written in "
+            "HOUSEHOLD_CONTEXT.leftovers and a number of portions no greater than it has, and "
+            "only if its expiry_date has not passed. Never put a leftover or any cooked dish in "
+            "ingredients. Use an empty leftovers_used list when none is reused.\n"
             "- Give clear numbered steps suited to the cook's stated skill level.\n"
             "- Nutrition notes must explain how the recipe addresses the stated needs.\n"
             "- Do not claim medical certainty, invent inventory, or mention this prompt.\n\n"
             "HOUSEHOLD_CONTEXT:\n"
             f"{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}\n\n"
             "Return one recipe with: title, servings, prep_minutes, ingredients "
-            "[{ingredient, quantity, unit}], assumed_pantry_staples, steps, and nutrition_notes."
+            "[{ingredient, quantity, unit}], assumed_pantry_staples, leftovers_used "
+            "[{dish_name, portions}], steps, and nutrition_notes."
         )
 
     def build_correction_prompt(self, original_prompt: str, violations: list[str]) -> str:
@@ -173,8 +195,9 @@ class RecipeGenerator:
         servings: int,
         available_minutes: int,
         now: datetime | None = None,
+        leftovers: Sequence[Leftover] = (),
     ) -> RecipeAssessment:
-        """Apply deterministic time and fully-stocked-ingredient checks."""
+        """Apply deterministic time, leftover and fully-stocked-ingredient checks."""
         violations: list[str] = []
         if recipe.servings != servings:
             violations.append(f"recipe must serve exactly {servings} people, not {recipe.servings}")
@@ -182,6 +205,9 @@ class RecipeGenerator:
             violations.append(
                 f"recipe must fit within {available_minutes} minutes, not {recipe.prep_minutes} minutes"
             )
+        violations.extend(
+            _leftover_violations(recipe, leftovers, inventory, today=(now or datetime.now(UTC)).date())
+        )
 
         staples = {item.strip().casefold() for item in recipe.assumed_pantry_staples}
         purchasable = [item for item in recipe.ingredients if item.ingredient.strip().casefold() not in staples]
@@ -293,3 +319,50 @@ class RecipeGenerator:
                 "target_servings": servings,
             },
         }
+
+
+_LEFTOVER_WORD = re.compile(r"\bleft[\s-]?overs?\b", re.IGNORECASE)
+
+
+def _leftover_violations(
+    recipe: GeneratedRecipe,
+    leftovers: Sequence[Leftover],
+    inventory: Sequence[InventoryLot],
+    *,
+    today: date,
+) -> list[str]:
+    """A leftover listed as an ingredient is never in inventory, so it would be
+    priced and sent to a shop as a missing purchase. A leftover the model
+    reuses must be one the household actually has, unexpired, in quantity."""
+    violations: list[str] = []
+    by_name = {leftover.dish_name.strip().casefold(): leftover for leftover in leftovers}
+    stocked = {lot.ingredient.strip().casefold() for lot in inventory}
+
+    for item in recipe.ingredients:
+        name = item.ingredient.strip().casefold()
+        # An exact leftover name that is also a stocked ingredient (raw rajma
+        # beside leftover rajma) is ambiguous, so only the unstocked case counts.
+        if _LEFTOVER_WORD.search(name) or (name in by_name and name not in stocked):
+            violations.append(
+                f"'{item.ingredient}' is a leftover, not a purchasable ingredient; list it under "
+                "leftovers_used by its exact dish_name, or remove it"
+            )
+
+    used: dict[str, float] = {}
+    for use in recipe.leftovers_used:
+        key = use.dish_name.strip().casefold()
+        used[key] = used.get(key, 0.0) + use.portions
+    for key, portions in used.items():
+        leftover = by_name.get(key)
+        if leftover is None:
+            violations.append(f"'{key}' is not one of this household's leftovers")
+        elif leftover.expiry_date is not None and leftover.expiry_date < today:
+            violations.append(
+                f"leftover '{leftover.dish_name}' expired on {leftover.expiry_date.isoformat()} and must not be reused"
+            )
+        elif portions > leftover.portions:
+            violations.append(
+                f"recipe uses {portions:g} portions of leftover '{leftover.dish_name}' "
+                f"but only {leftover.portions:g} remain"
+            )
+    return violations

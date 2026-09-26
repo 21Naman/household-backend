@@ -199,3 +199,138 @@ def test_exhausted_provider_chain_leaves_loop_unchanged(client):
     )
     assert response.status_code == 503
     assert client.get(f"/api/households/{household_id}/loops/{loop_id}").json()["status"] == "triggered"
+
+
+# -- leftovers are reused, never bought ----------------------------------------
+
+
+def _add_leftover(client, household_id: int, dish_name: str, portions: float, expiry_in_days: int) -> None:
+    client.post(
+        f"/api/households/{household_id}/leftovers",
+        json={
+            "dish_name": dish_name,
+            "portions": portions,
+            "expiry_date": (date.today() + timedelta(days=expiry_in_days)).isoformat(),
+        },
+    )
+
+
+def _with_leftovers(recipe: dict, leftovers_used: list[dict]) -> dict:
+    return {**recipe, "leftovers_used": leftovers_used}
+
+
+def test_leftover_listed_as_ingredient_is_corrected_and_never_priced(client):
+    with_leftover_as_ingredient = _recipe(
+        ingredients=[
+            {"ingredient": "Rice", "quantity": 200, "unit": "g"},
+            {"ingredient": "Moong Dal", "quantity": 150, "unit": "g"},
+            {"ingredient": "Leftover Sambar", "quantity": 250, "unit": "ml"},
+        ]
+    )
+    corrected = _with_leftovers(
+        _recipe(
+            ingredients=[
+                {"ingredient": "Rice", "quantity": 200, "unit": "g"},
+                {"ingredient": "Moong Dal", "quantity": 150, "unit": "g"},
+            ]
+        ),
+        [{"dish_name": "Sambar", "portions": 2}],
+    )
+    provider = FakeRecipeProvider([with_leftover_as_ingredient, corrected])
+    _set_recipe_provider(provider)
+    household_id, loop_id = _household_with_context(client)
+    _add_leftover(client, household_id, "Sambar", 3, expiry_in_days=2)
+
+    response = client.post(
+        f"/api/v2/households/{household_id}/loops/{loop_id}/recipe",
+        json={"servings": 2, "available_minutes": 30},
+    )
+    assert response.status_code == 200, response.text
+    assert provider.correction_calls == 1
+    assert "'Leftover Sambar' is a leftover" in provider.prompts[1]
+    body = response.json()
+    assert body["missing_ingredients"] == []
+    assert body["recipe"]["leftovers_used"] == [{"dish_name": "Sambar", "portions": 2.0}]
+    assert '"leftovers":[{"dish_name":"Sambar"' in provider.prompts[0]
+
+
+def _assess(recipe: dict, *, leftovers, inventory=()):
+    from app.core.recipe_planner import RecipeGenerator
+    from app.schemas import GeneratedRecipe
+
+    return RecipeGenerator(None).assess(
+        GeneratedRecipe.model_validate(recipe),
+        list(inventory),
+        servings=2,
+        available_minutes=30,
+        leftovers=leftovers,
+    )
+
+
+def _leftover_row(dish_name: str, portions: float, expiry_in_days: int):
+    from app.models import Leftover
+
+    return Leftover(
+        household_id=1,
+        dish_name=dish_name,
+        portions=portions,
+        expiry_date=date.today() + timedelta(days=expiry_in_days),
+    )
+
+
+def _stocked(*names: str):
+    from datetime import datetime, timezone
+
+    from app.models import InventoryLot
+
+    return [
+        InventoryLot(
+            household_id=1, ingredient=name, quantity=1000, unit="g", updated_at=datetime.now(timezone.utc)
+        )
+        for name in names
+    ]
+
+
+@pytest.mark.parametrize(
+    ("leftovers_used", "leftovers", "expected"),
+    [
+        ([{"dish_name": "Sambar", "portions": 1}], [], "'sambar' is not one of this household's leftovers"),
+        ([{"dish_name": "Sambar", "portions": 1}], [("Sambar", 3, -1)], "expired on"),
+        ([{"dish_name": "Sambar", "portions": 4}], [("Sambar", 3, 2)], "uses 4 portions of leftover 'Sambar' but only 3 remain"),
+        (
+            [{"dish_name": "Sambar", "portions": 2}, {"dish_name": "sambar", "portions": 2}],
+            [("Sambar", 3, 2)],
+            "uses 4 portions",
+        ),
+    ],
+)
+def test_leftover_use_must_exist_be_unexpired_and_in_quantity(leftovers_used, leftovers, expected):
+    from app.core.recipe_planner import RecipeConstraintError
+
+    recipe = _with_leftovers(_recipe(ingredients=[{"ingredient": "Rice", "quantity": 200, "unit": "g"}]), leftovers_used)
+    with pytest.raises(RecipeConstraintError) as exc:
+        _assess(recipe, leftovers=[_leftover_row(*row) for row in leftovers], inventory=_stocked("Rice"))
+    assert any(expected in violation for violation in exc.value.violations), exc.value.violations
+
+
+def test_unstocked_ingredient_named_like_a_leftover_is_refused():
+    from app.core.recipe_planner import RecipeConstraintError
+
+    recipe = _recipe(
+        ingredients=[
+            {"ingredient": "Rice", "quantity": 200, "unit": "g"},
+            {"ingredient": "Jeera Rice", "quantity": 1, "unit": "portion"},
+        ]
+    )
+    with pytest.raises(RecipeConstraintError) as exc:
+        _assess(recipe, leftovers=[_leftover_row("Jeera Rice", 2, 1)], inventory=_stocked("Rice"))
+    assert any("'Jeera Rice' is a leftover" in violation for violation in exc.value.violations)
+
+
+def test_stocked_raw_ingredient_sharing_a_leftover_name_is_allowed():
+    recipe = _with_leftovers(
+        _recipe(ingredients=[{"ingredient": "Rajma", "quantity": 200, "unit": "g"}]),
+        [{"dish_name": "Rajma", "portions": 1}],
+    )
+    assessment = _assess(recipe, leftovers=[_leftover_row("Rajma", 2, 2)], inventory=_stocked("Rajma"))
+    assert assessment.gap == []

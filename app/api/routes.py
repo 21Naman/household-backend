@@ -19,7 +19,9 @@ Both routers mount under the same /api prefix in app/main.py.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlmodel import Session, select
@@ -39,10 +41,13 @@ from app.models import (
     CookProfile,
     Dish,
     DishHistory,
+    Household,
+    InstamartCartSnapshot,
     InventoryLot,
     MealLoopRecord,
     PineLabsConnection,
 )
+from app.providers.instamart_mcp import InstamartMCPError
 from app.providers.language import resolve_voiced_language
 from app.providers.model_failures import RecipeProviderOperationalError
 from app.providers.voice import VoiceSynthesisUnavailable, join_audio
@@ -50,6 +55,8 @@ from app.repositories import Repository
 from app.schemas import (
     ApprovalDecision,
     ConsumedItem,
+    InstamartCartBuildRequest,
+    InstamartCartBuildResponse,
     LoopStart,
     OutcomeCapture,
     PlanRequest,
@@ -414,6 +421,7 @@ def generate_recipe(
                 state.inventory,
                 servings=servings,
                 available_minutes=payload.available_minutes,
+                leftovers=state.leftovers,
             )
             quotes = _quote_gap(container, assessment.gap)
             if assessment.gap:
@@ -1044,6 +1052,192 @@ def commerce_search(household_id: int, query: str):
         results["zepto"] = container.zepto.search("mock-token", query)
     results[container.commerce_second.provider_name.lower()] = container.commerce_second.search(query)
     return results
+
+
+# ============================================================================
+# Swiggy Instamart -- builds a cart for the missing ingredients. Stops before
+# checkout: the registry's INSTAMART gate refuses every order/payment method.
+# ============================================================================
+
+_COUNT_UNITS = frozenset({"count", "piece", "pieces", "pc", "pcs", "item", "items", "no", "nos", "unit", "units"})
+
+
+def _invoke_instamart(
+    container: Container, session: Session, household_id: int, loop_id: int | None, method: str, *args: Any
+) -> dict[str, Any]:
+    try:
+        return container.registry.invoke(ToolKind.INSTAMART, method, {"household_id": household_id}, *args)
+    except ToolCallRefused as exc:
+        _record_tool_refusal(session, household_id, loop_id, exc)
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+
+
+def _instamart_products(search_result: dict[str, Any]) -> list[dict[str, Any]]:
+    data = search_result.get("data", search_result)
+    products = data.get("products", []) if isinstance(data, dict) else data
+    return [p for p in products if isinstance(p, dict)] if isinstance(products, list) else []
+
+
+def _in_stock_variant(product: dict[str, Any]) -> dict[str, Any] | None:
+    """First variant that is known to be available. Never falls back to an
+    out-of-stock one: a cart line the store cannot fill is worse than an
+    ingredient reported as unmatched."""
+    product_available = bool(product.get("inStock") or product.get("isAvail"))
+    for variant in product.get("variations") or product.get("variants") or []:
+        if not isinstance(variant, dict) or not variant.get("spinId"):
+            continue
+        flag = variant.get("isInStockAndAvailable")
+        if flag is True or (flag is None and product_available):
+            return variant
+    return None
+
+
+def _cart_quantity(quantity: float, unit: str) -> int:
+    """Counted things (eggs, lemons) buy one unit each; anything measured by
+    weight or volume buys one pack, since pack sizes are not comparable."""
+    if unit.strip().casefold() in _COUNT_UNITS:
+        return max(1, math.ceil(quantity))
+    return 1
+
+
+@router.get("/households/{household_id}/instamart/addresses")
+def list_instamart_addresses(household_id: int, session: Session = Depends(get_db_session)):
+    if session.get(Household, household_id) is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Household {household_id} was not found")
+    container = get_container()
+    try:
+        return _invoke_instamart(container, session, household_id, None, "get_addresses")
+    except InstamartMCPError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+
+
+@router.post(
+    "/households/{household_id}/loops/{loop_id}/instamart-cart",
+    response_model=InstamartCartBuildResponse,
+)
+def build_instamart_cart(
+    household_id: int,
+    loop_id: int,
+    payload: InstamartCartBuildRequest,
+    session: Session = Depends(get_db_session),
+) -> InstamartCartBuildResponse:
+    container = get_container()
+    Repository(MealLoopRecord, session).get_for_household(loop_id, household_id)
+    address_id = payload.selected_address_id
+
+    matched: list[dict[str, Any]] = []
+    unmatched: list[dict[str, Any]] = []
+    cart_lines: dict[str, dict[str, Any]] = {}
+
+    for missing in payload.missing_ingredients:
+        query = missing.ingredient.strip()
+
+        def miss(reason: str) -> None:
+            unmatched.append(
+                {"ingredient": missing.ingredient, "requested_quantity": missing.quantity, "unit": missing.unit, "reason": reason}
+            )
+
+        try:
+            result = _invoke_instamart(container, session, household_id, loop_id, "search_products", address_id, query)
+        except InstamartMCPError as exc:
+            logger.warning("Instamart search failed for %r: %s", query, exc)
+            miss("search_failed")
+            continue
+
+        products = _instamart_products(result)
+        if not products:
+            miss("no_search_results")
+            continue
+        product, variant = next(
+            ((p, v) for p in products if (v := _in_stock_variant(p)) is not None), (None, None)
+        )
+        if product is None or variant is None:
+            miss("out_of_stock")
+            continue
+
+        quantity = _cart_quantity(missing.quantity, missing.unit)
+        spin_id = variant["spinId"]
+        # Two ingredients can resolve to the same SKU; one cart line, summed.
+        line = cart_lines.setdefault(spin_id, {"spinId": spin_id, "skuId": variant.get("skuId"), "quantity": 0})
+        line["quantity"] += quantity
+        matched.append(
+            {
+                "ingredient": missing.ingredient,
+                "query": query,
+                "product_id": product.get("productId"),
+                "parent_product_id": product.get("parentProductId"),
+                "spin_id": spin_id,
+                "sku_id": variant.get("skuId"),
+                "item_name": variant.get("displayName") or product.get("displayName"),
+                "item_variant": variant.get("quantityDescription"),
+                "requested_quantity": missing.quantity,
+                "cart_quantity": quantity,
+                "unit": missing.unit,
+            }
+        )
+
+    if cart_lines:
+        try:
+            update_result = _invoke_instamart(
+                container, session, household_id, loop_id, "update_cart", address_id, list(cart_lines.values())
+            )
+        except InstamartMCPError as exc:
+            session.add(
+                AuditEvent(
+                    household_id=household_id,
+                    meal_loop_id=loop_id,
+                    event="instamart_cart_failed",
+                    detail=str(exc)[:400],
+                )
+            )
+            session.commit()
+            raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
+        try:
+            live_cart = _invoke_instamart(container, session, household_id, loop_id, "get_cart")
+        except InstamartMCPError as exc:
+            logger.warning("Instamart get_cart failed after update; returning the update response: %s", exc)
+            live_cart = update_result
+        detail = f"matched={len(matched)} unmatched={len(unmatched)} cart_lines={len(cart_lines)}"
+    else:
+        # Nothing matched, so the account's existing cart is left untouched.
+        live_cart = {}
+        detail = f"matched=0 unmatched={len(unmatched)}; cart left unchanged"
+
+    snapshot = Repository(InstamartCartSnapshot, session).create(
+        InstamartCartSnapshot(
+            household_id=household_id,
+            meal_loop_id=loop_id,
+            selected_address_id=address_id,
+            missing_ingredients_json=[m.model_dump() for m in payload.missing_ingredients],
+            matched_items_json=matched,
+            unmatched_items_json=unmatched,
+            live_cart_json=live_cart,
+        )
+    )
+    session.add(AuditEvent(household_id=household_id, meal_loop_id=loop_id, event="instamart_cart_built", detail=detail))
+    session.commit()
+
+    return InstamartCartBuildResponse(
+        snapshot_id=snapshot.id,
+        selected_address_id=address_id,
+        matched_items=matched,
+        unmatched_items=unmatched,
+        live_cart=live_cart,
+    )
+
+
+@router.get("/households/{household_id}/loops/{loop_id}/instamart-cart")
+def get_instamart_cart_snapshot(household_id: int, loop_id: int, session: Session = Depends(get_db_session)):
+    Repository(MealLoopRecord, session).get_for_household(loop_id, household_id)
+    snapshot = session.exec(
+        select(InstamartCartSnapshot)
+        .where(InstamartCartSnapshot.household_id == household_id)
+        .where(InstamartCartSnapshot.meal_loop_id == loop_id)
+        .order_by(InstamartCartSnapshot.created_at.desc(), InstamartCartSnapshot.id.desc())
+    ).first()
+    if snapshot is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No Instamart cart has been built for this loop")
+    return snapshot
 
 
 # ============================================================================

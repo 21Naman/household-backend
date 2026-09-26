@@ -163,12 +163,19 @@ class RecipeIngredient(APIModel):
         return value
 
 
+class LeftoverUse(APIModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dish_name: str = Field(min_length=1, max_length=120)
+    portions: float = Field(gt=0)
+
+
 class GeneratedRecipe(APIModel):
     """The constrained, response-only LLM proposal.
 
     `ingredients` contains the measurable/purchasable recipe ingredients.
-    Everyday basics the model assumes are represented separately and do not
-    enter the shopping-gap calculation.
+    Everyday basics the model assumes, and already-cooked leftovers it reuses,
+    are represented separately and do not enter the shopping-gap calculation.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -178,6 +185,7 @@ class GeneratedRecipe(APIModel):
     prep_minutes: int = Field(ge=1, le=360)
     ingredients: list[RecipeIngredient] = Field(min_length=1, max_length=30)
     assumed_pantry_staples: list[str] = Field(max_length=20)
+    leftovers_used: list[LeftoverUse] = Field(default_factory=list, max_length=10)
     steps: list[str] = Field(min_length=1, max_length=15)
     nutrition_notes: list[str] = Field(min_length=1, max_length=10)
 
@@ -316,6 +324,54 @@ class GapItem(APIModel):
     missing_quantity: float
     unit: str
     quantity_unknown: bool = False
+
+
+# -- Instamart cart building (no checkout) ------------------------------------
+
+class InstamartMissingIngredient(APIModel):
+    ingredient: str = Field(min_length=1, max_length=120)
+    quantity: float = Field(gt=0)
+    unit: str = Field(min_length=1, max_length=32)
+    quantity_unknown: bool = False
+
+
+class InstamartCartBuildRequest(APIModel):
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+    selected_address_id: str = Field(min_length=1, max_length=128, alias="selectedAddressId")
+    # Bounded because each ingredient is one upstream search call.
+    missing_ingredients: list[InstamartMissingIngredient] = Field(
+        min_length=1, max_length=40, alias="missingIngredients"
+    )
+
+
+class InstamartMatchedItem(APIModel):
+    ingredient: str
+    query: str
+    product_id: str | None = None
+    parent_product_id: str | None = None
+    spin_id: str
+    sku_id: str | None = None
+    item_name: str | None = None
+    item_variant: str | None = None
+    requested_quantity: float
+    cart_quantity: int
+    unit: str
+
+
+class InstamartUnmatchedItem(APIModel):
+    ingredient: str
+    requested_quantity: float
+    unit: str
+    reason: str
+
+
+class InstamartCartBuildResponse(APIModel):
+    snapshot_id: int
+    selected_address_id: str
+    matched_items: list[InstamartMatchedItem]
+    unmatched_items: list[InstamartUnmatchedItem]
+    live_cart: dict[str, Any]
 
 
 # RecipeGenerationResponse is declared before GapItem so the public recipe

@@ -390,14 +390,214 @@
   function renderRight(data, hid, loopId) {
     // `data` is null before a recipe exists: the event log still renders, so
     // a reader can watch the trail from the first click rather than after it.
-    var html = data ? recipeMarkup(data) + gateMarkup(data) + cookedPanelMarkup(data) : "";
+    var html = data
+      ? recipeMarkup(data) + instamartMarkup(data) + gateMarkup(data) + cookedPanelMarkup(data)
+      : "";
     right.innerHTML = html + auditMarkup();
     if (data) {
       hydrateAudio(data, hid, loopId);
+      hydrateInstamart(data, hid, loopId);
       hydrateGate(data, hid, loopId);
       hydrateCookedPanel(data, hid, loopId);
     }
     refreshAudit(hid);
+  }
+
+  // -- Instamart cart --------------------------------------------------
+  //
+  // Builds a cart only. There is no checkout button because there is no
+  // checkout path: the registry refuses every order and payment method.
+
+  var UNMATCHED_REASONS = {
+    no_search_results: "no search results",
+    out_of_stock: "every result was out of stock",
+    search_failed: "search failed"
+  };
+
+  function instamartMarkup(data) {
+    if (!data.missing_ingredients.length) { return ""; }
+    var html = '<div class="panel" id="im-panel">';
+    html += "<h2>Instamart cart</h2>";
+    html += '<p class="sub" style="margin-bottom:16px">Build a cart from the missing ingredients in this recipe. ' +
+            "Choose a delivery address, then build the cart. Nothing is ordered or paid for.</p>";
+    html += '<div class="row"><div class="field" style="flex:1 1 100%">' +
+            '<label for="im-address">Delivery address</label>' +
+            '<select id="im-address" disabled><option value="">loading…</option></select></div></div>';
+    html += '<div class="actions"><button id="im-build" disabled>Build cart</button>' +
+            '<button id="im-refresh" class="ghost">Refresh snapshot</button>' +
+            '<span id="im-note" class="note"></span></div>';
+    html += '<div id="im-result"></div>';
+    return html + "</div>";
+  }
+
+  function hydrateInstamart(data, hid, loopId) {
+    var panel = $("im-panel");
+    if (!panel) { return; }
+    var select = $("im-address"), build = $("im-build"), refresh = $("im-refresh");
+    var note = $("im-note"), result = $("im-result");
+
+    function busy(text) { note.className = "note"; note.innerHTML = '<span class="spinner"></span> ' + esc(text); }
+    function failed(error) { note.innerHTML = '<span class="err">' + esc(error.message || String(error)) + "</span>"; }
+
+    loadInstamartAddresses(hid).then(function (addresses) {
+      if (!addresses.length) {
+        select.innerHTML = '<option value="">none</option>';
+        note.textContent = "No saved delivery addresses found.";
+        return;
+      }
+      select.innerHTML = addresses.map(function (a) {
+        return '<option value="' + esc(a.id) + '">' + esc(a.label) + "</option>";
+      }).join("");
+      select.disabled = false;
+      build.disabled = false;
+    }).catch(function (error) {
+      select.innerHTML = '<option value="">unavailable</option>';
+      failed(error);
+    });
+
+    build.addEventListener("click", async function () {
+      // The recipe's gap is priced as `missing_quantity`; the cart endpoint
+      // calls it `quantity` and requires it to be positive.
+      var usable = data.missing_ingredients.filter(function (m) { return Number(m.missing_quantity) > 0; });
+      var dropped = data.missing_ingredients.length - usable.length;
+      if (!usable.length) { failed(new Error("No missing ingredient has a positive quantity to buy.")); return; }
+      var payload = {
+        selectedAddressId: select.value,
+        missingIngredients: usable.map(function (m) {
+          return {
+            ingredient: m.ingredient,
+            quantity: Number(m.missing_quantity),
+            unit: m.unit,
+            quantity_unknown: Boolean(m.quantity_unknown)
+          };
+        })
+      };
+      build.disabled = true;
+      busy("Searching Instamart and building the cart…");
+      try {
+        var response = await fetch("/api/households/" + hid + "/loops/" + loopId + "/instamart-cart", {
+          method: "POST", headers: headers(), body: JSON.stringify(payload)
+        });
+        if (!response.ok) { throw new Error(await detail(response)); }
+        var body = await response.json();
+        result.innerHTML = cartResultMarkup(body);
+        var notes = [body.unmatched_items.length
+          ? "Cart built, but some ingredients could not be matched."
+          : "Cart built successfully."];
+        if (dropped) { notes.push(dropped + " ingredient(s) with no quantity were left out."); }
+        note.textContent = notes.join(" ");
+      } catch (error) {
+        failed(error);
+      } finally {
+        build.disabled = !select.value;
+      }
+      refreshAudit(hid);
+    });
+
+    refresh.addEventListener("click", async function () {
+      refresh.disabled = true;
+      busy("Loading the latest snapshot…");
+      try {
+        var row = await getJSON("/api/households/" + hid + "/loops/" + loopId + "/instamart-cart");
+        // The snapshot endpoint returns the stored row, whose field names
+        // differ from the build response; the renderer takes the latter.
+        result.innerHTML = cartResultMarkup({
+          snapshot_id: row.id,
+          selected_address_id: row.selected_address_id,
+          matched_items: row.matched_items_json || [],
+          unmatched_items: row.unmatched_items_json || [],
+          live_cart: row.live_cart_json || {},
+          created_at: row.created_at
+        });
+        note.textContent = "Showing the latest saved snapshot.";
+      } catch (error) {
+        failed(error);
+      } finally {
+        refresh.disabled = false;
+      }
+    });
+  }
+
+  async function loadInstamartAddresses(hid) {
+    var body = await getJSON("/api/households/" + hid + "/instamart/addresses");
+    var rows = Array.isArray(body) ? body : (body.data || body.addresses || []);
+    if (!Array.isArray(rows)) { rows = rows.addresses || []; }
+    return rows.map(function (a) {
+      var id = a.id || a.addressId;
+      var text = a.displayAddress || a.address || "";
+      return { id: id, label: (a.label || a.annotation || "Address") + (text ? " — " + text : "") };
+    }).filter(function (a) { return a.id; });
+  }
+
+  function cartResultMarkup(body) {
+    var html = '<div class="sec"><h3>Snapshot</h3>';
+    html += '<div class="money"><span>Snapshot id</span><b>' + esc(body.snapshot_id) + "</b></div>";
+    html += '<div class="money"><span>Address id</span><b>' + esc(body.selected_address_id) + "</b></div>";
+    if (body.created_at) {
+      html += '<div class="money"><span>Built at</span><b>' +
+              esc(String(body.created_at).replace("T", " ").slice(0, 19)) + "</b></div>";
+    }
+    html += "</div>";
+
+    html += '<div class="sec"><h3>Matched</h3>';
+    if (body.matched_items.length) {
+      body.matched_items.forEach(function (m) {
+        html += '<div class="signal"><b>' + esc(m.ingredient) + "</b> → " + esc(m.item_name || m.spin_id) +
+                (m.item_variant ? ' <span class="when">' + esc(m.item_variant) + "</span>" : "") +
+                '<br /><span class="tags">needed ' + esc(m.requested_quantity) + " " + esc(m.unit) +
+                " · adding " + esc(m.cart_quantity) + " to cart · spin " + esc(m.spin_id) +
+                (m.sku_id ? " · sku " + esc(m.sku_id) : "") + "</span></div>";
+      });
+    } else {
+      html += '<p class="note">Nothing matched, so the Instamart cart was left unchanged.</p>';
+    }
+    html += "</div>";
+
+    if (body.unmatched_items.length) {
+      html += '<div class="sec"><h3>Not matched</h3><div class="missing">';
+      html += body.unmatched_items.map(function (u) {
+        return esc(u.ingredient) + " — " + esc(UNMATCHED_REASONS[u.reason] || u.reason);
+      }).join("<br />");
+      html += "</div></div>";
+    }
+
+    html += liveCartMarkup(body.live_cart, body.matched_items);
+    return html;
+  }
+
+  function liveCartMarkup(cart, matched) {
+    var html = '<div class="sec"><h3>Live cart</h3>';
+    if (!cart || !Object.keys(cart).length) {
+      return html + '<p class="note">No live cart was returned.</p></div>';
+    }
+    // Cart lines carry only spin ids; name them from what this build matched.
+    var names = {};
+    matched.forEach(function (m) { names[m.spin_id] = m.item_name || m.ingredient; });
+    var items = Array.isArray(cart.items) ? cart.items : [];
+    if (items.length) {
+      items.forEach(function (item) {
+        var name = item.displayName || item.name || names[item.spinId] || item.spinId || "item";
+        var unavailable = item.isAvailable === false || item.isInStockAndAvailable === false;
+        html += '<div class="stock"><span>' + esc(name) + " × " + esc(item.quantity) +
+                (unavailable ? ' <span class="tag-strong">unavailable</span>' : "") + "</span>" +
+                '<span class="q">' + (item.total != null ? money(item.total) : "") + "</span></div>";
+      });
+    } else {
+      html += '<p class="note">The cart is empty.</p>';
+    }
+    var bill = cart.bill || {};
+    if (bill.itemTotal != null) { html += '<div class="money"><span>Items</span><b>' + money(bill.itemTotal) + "</b></div>"; }
+    if (bill.deliveryFee != null) { html += '<div class="money"><span>Delivery</span><b>' + money(bill.deliveryFee) + "</b></div>"; }
+    if (bill.toPay != null) { html += '<div class="money"><span>To pay</span><b>' + money(bill.toPay) + "</b></div>"; }
+    var warnings = [].concat(cart.warnings || [], cart.messages || []);
+    if (warnings.length) {
+      html += '<p class="note err" style="margin-top:8px">' + warnings.map(function (w) {
+        return esc(typeof w === "string" ? w : (w.message || JSON.stringify(w)));
+      }).join("<br />") + "</p>";
+    }
+    html += '<details class="sec"><summary>Raw cart</summary><pre>' +
+            esc(JSON.stringify(cart, null, 2)) + "</pre></details>";
+    return html + "</div>";
   }
 
   // -- the spend gate --------------------------------------------------
@@ -580,6 +780,15 @@
       html += "<li>" + esc(i.quantity) + " " + esc(i.unit) + " " + esc(i.ingredient) + "</li>";
     });
     html += "</ul></div>";
+
+    if (r.leftovers_used && r.leftovers_used.length) {
+      html += '<div class="sec"><h3>From leftovers</h3><ul>';
+      r.leftovers_used.forEach(function (l) {
+        html += "<li>" + esc(l.dish_name) + " — " + esc(l.portions) + " portion" +
+                (Number(l.portions) === 1 ? "" : "s") + "</li>";
+      });
+      html += "</ul></div>";
+    }
 
     if (r.assumed_pantry_staples.length) {
       html += '<div class="sec"><h3>Assumed on hand</h3><p class="note">' +

@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     commerce_second_provider_name: str = "blinkit"
     commerce_mock_enabled: bool = True
 
+    # -- Swiggy Instamart (cart building only; checkout is refused by the gate) --
+    # Live only with a token AND the mock flag explicitly off, like Gnani.
+    instamart_mcp_url: str = "https://mcp.swiggy.com/im"
+    instamart_access_token: str | None = None
+    instamart_mock_enabled: bool = True
+
     # -- Pine Labs P3P/Grantex (Ticket #18 mock, #40 live — Q4, BLOCKED on RQ4/RQ5) -
     pinelabs_client_id: str | None = None
     pinelabs_client_secret: str | None = None
@@ -321,6 +327,16 @@ class Settings(BaseSettings):
                 "HOUSEHOLD_GNANI_API_KEY is set but HOUSEHOLD_GNANI_MOCK_ENABLED is true — "
                 "voice stays mocked. Set the mock flag to false to use the live rail."
             )
+        if self.instamart_access_token and self.instamart_mock_enabled:
+            warnings.append(
+                "HOUSEHOLD_INSTAMART_ACCESS_TOKEN is set but HOUSEHOLD_INSTAMART_MOCK_ENABLED is true — "
+                "Instamart stays mocked. Set the mock flag to false to use the live rail."
+            )
+        if not self.instamart_access_token and not self.instamart_mock_enabled:
+            warnings.append(
+                "HOUSEHOLD_INSTAMART_MOCK_ENABLED is false but no HOUSEHOLD_INSTAMART_ACCESS_TOKEN is set — "
+                "Instamart stays mocked."
+            )
         if not self.api_key:
             warnings.append(
                 "HOUSEHOLD_API_KEY is unset — the API will refuse to bind to a non-loopback host, "
@@ -334,6 +350,7 @@ class Settings(BaseSettings):
                 ("pinelabs", self.pinelabs_mock_enabled),
                 ("delhivery", self.delhivery_mock_enabled),
                 ("gnani", self.gnani_mock_enabled),
+                ("instamart", self.instamart_mock_enabled or not self.instamart_access_token),
             )
             if flag
         ]

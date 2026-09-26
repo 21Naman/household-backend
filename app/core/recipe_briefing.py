@@ -178,6 +178,10 @@ class RecipeBriefer:
             "prep_minutes": recipe.prep_minutes,
             "ingredients": ingredients,
             "assumed_pantry_staples": list(recipe.assumed_pantry_staples),
+            "leftovers_to_use": [
+                {"dish_name": use.dish_name, "portions": use.portions}
+                for use in getattr(recipe, "leftovers_used", [])
+            ],
             "steps": list(recipe.steps),
             "missing_from_kitchen": missing,
         }
