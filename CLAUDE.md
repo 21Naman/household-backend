@@ -21,7 +21,7 @@ cp .env.example .env                  # optional — every setting has a safe de
 python -m app.main                    # serve on 127.0.0.1:8000 (docs at /docs)
 python scripts/seed_demo_households.py --refresh   # demo households, restored in place
 
-pytest                                          # full suite (235 passed, 3 skipped without live AWS creds)
+pytest                                          # full suite (264 passed, 3 skipped without live AWS creds)
 pytest tests/test_services.py                   # single file
 pytest tests/test_services.py::test_name -v     # single test
 pytest --cov=app --cov-report=term-missing      # coverage breakdown

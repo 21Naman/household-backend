@@ -261,7 +261,7 @@ and every remote rail is mock-backed unless you configure it otherwise. Without
 model API keys, recipe generation needs a local Ollama; everything else works.
 
 ```bash
-pytest                                            # 242 passed, 3 skipped
+pytest                                            # 264 passed, 3 skipped
 pytest --cov=app.services --cov-branch            # 99% branch coverage on the decision core
 ```
 

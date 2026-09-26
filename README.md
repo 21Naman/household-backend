@@ -37,14 +37,19 @@ deployment with no key configured. That is the auth gate (Ticket #7) working.
    One preference is struck through and marked **expired** — the system knows
    about it and deliberately does not act on it.
 3. **Press "Generate".** A live LLM writes a recipe; deterministic code then
-   prices it, checks it against the budget, and assigns a spend tier.
-4. **Press "Read it to me".** That is a real voice from a real text-to-speech
+   prices it, checks it against the budget, and assigns a spend tier. Leftovers
+   the recipe reuses are listed separately and are never priced or bought.
+4. **If ingredients are missing, press "Build cart".** It fills an Instamart cart
+   with the first in-stock match for each one. There is no checkout button,
+   because there is no checkout path — the tool gate refuses every order and
+   payment method.
+5. **Press "Read it to me".** That is a real voice from a real text-to-speech
    vendor, speaking Hinglish. Turn your volume up.
-5. **If a spend approval appears, approve it, then execute.** Now go back and
+6. **If a spend approval appears, approve it, then execute.** Now go back and
    **generate a second recipe**, and try to execute again — you will get a
    **403 refusal**, because the basket changed after you approved it. That
    refusal is the single best thing in this project.
-6. **Press "I cooked this".** Watch the kitchen inventory decrement in the left pane.
+7. **Press "I cooked this".** Watch the kitchen inventory decrement in the left pane.
 
 **Three households, three different things to see:**
 
@@ -70,11 +75,11 @@ the project.
 | | |
 |---|---|
 | **Live external calls** | Groq (`openai/gpt-oss-120b`) and Gemini (`gemini-3.8-flash`) for recipe generation and the spoken rewrite. Gnani Timbre v2.5 for text-to-speech — a real vendor API returning real MP3s. |
-| **Mock-backed** | Zepto and a second commerce provider (pricing), Pine Labs (payments), Delhivery (logistics). They compute deterministic answers. **No money moves and no order is placed.** |
+| **Mock-backed** | Zepto and a second commerce provider (pricing), Pine Labs (payments), Delhivery (logistics), and Swiggy Instamart (cart building, over its MCP server). They compute deterministic answers. **No money moves and no order is placed.** Instamart has a live rail, but it needs an access token this deployment does not hold, and even live it can only build a cart — checkout is refused at the gate. |
 | **Deliberately gated** | Pine Labs live mode raises `NotYetValidated` at construction; Gnani speech-to-**text** refuses without explicit acknowledgment. Both are blocked on open research questions. Text-to-speech is not gated and does run. |
 
 The startup log says the same thing in its own words: *"Active mocks: zepto,
-commerce_second_provider, pinelabs, delhivery — do not present these as live to
+commerce_second_provider, pinelabs, delhivery, instamart — do not present these as live to
 a judge."*
 
 What this deployment does **not** do is in
@@ -84,7 +89,7 @@ audio cache and synthesis cap.
 
 ## Status
 
-- **242 tests passing, 3 skipped** (the 3 need live AWS credentials).
+- **264 tests passing, 3 skipped** (the 3 need live AWS credentials).
   **100% line and 99% branch coverage on `app/services.py`**, the deterministic
   decision core — one partial branch in `effective_freshness` is genuinely not
   exercised, and is named here rather than rounded up.
@@ -105,13 +110,14 @@ pip install -r requirements-dev.txt
 cp .env.example .env          # optional; every setting has a safe default
 python -m app.main            # http://127.0.0.1:8000  — API docs at /docs
 python scripts/seed_demo_households.py    # three furnished demo households
+python scripts/seed_demo_households.py --refresh   # restore them in place, ids kept
 ```
 
 It boots fully offline with zero credentials. Without model API keys, recipe
 generation needs a local Ollama; everything else works.
 
 ```bash
-pytest                                       # 242 passed, 3 skipped
+pytest                                       # 264 passed, 3 skipped
 pytest --cov=app --cov-report=term-missing   # coverage breakdown
 ```
 
@@ -136,6 +142,17 @@ only if both fail (there is no Ollama leg in the cloud). The prompt and the
 generated recipe are **never written to the database**. Recipes are
 deterministically rejected if they exceed the time limit, have under 60% stocked
 ingredients, or exceed remaining budget; one correction is allowed before `422`.
+Leftovers are already-cooked dishes, so they go in a separate `leftovers_used`
+list and never in `ingredients` — otherwise they would read as missing and get
+priced. A recipe that reuses a leftover the household does not have, that has
+expired, or beyond its portions is rejected the same way.
+
+`POST /api/households/{id}/loops/{loop_id}/instamart-cart` turns a loop's
+missing ingredients into a Swiggy Instamart cart: it searches each one, takes the
+first **in-stock** variant (an out-of-stock one is reported as unmatched, never
+added), replaces the cart, and reads it back. Only cart methods are on the
+gate's allowlist in [`app/core/registry.py`](app/core/registry.py); `checkout`
+and the payment tools are refused by name.
 
 A successful response carries an opaque `audio_id`. **Nothing is rewritten or
 synthesized until it is fetched**, so a cook who never presses play costs nothing
