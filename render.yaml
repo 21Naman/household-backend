@@ -1,0 +1,25 @@
+# Render blueprint. Importing this creates the service with the right shape;
+# the four secrets are still set by hand in the dashboard, because they do
+# not belong in a tracked file.
+services:
+  - type: web
+    name: aaj-kya-banega
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    # /health is unauthenticated on purpose (app/main.py declares it outside
+    # both routers), so Render can probe it without the API key.
+    healthCheckPath: /health
+    envVars:
+      # Set in the dashboard, not here. sync:false means Render prompts for
+      # them on import rather than treating an absent value as empty -- and
+      # an absent HOUSEHOLD_API_KEY makes the container refuse to start,
+      # which is Ticket #7 doing its job.
+      - key: HOUSEHOLD_API_KEY
+        sync: false
+      - key: HOUSEHOLD_GROQ_API_KEY
+        sync: false
+      - key: HOUSEHOLD_GEMINI_API_KEY
+        sync: false
+      - key: HOUSEHOLD_GNANI_API_KEY
+        sync: false

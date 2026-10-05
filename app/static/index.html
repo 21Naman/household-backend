@@ -1,0 +1,1007 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Aaj Kya Banega</title>
+<style>
+  :root {
+    --bg: #faf7f2; --panel: #ffffff; --ink: #24201b; --muted: #6d655b;
+    --line: #e5ded3; --accent: #b4552d; --accent-soft: #fdf0e9;
+    --ok: #2f6b4f; --warn: #8a6d1f; --err: #a33a2a;
+    --radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #17150f; --panel: #201d17; --ink: #efe9e0; --muted: #a79d90;
+      --line: #35302a; --accent: #e08152; --accent-soft: #2c211a;
+      --ok: #7fc0a0; --warn: #d6b45c; --err: #e08b7b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 24px 16px 64px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .sub { color: var(--muted); font-size: 0.875rem; margin: 0 0 20px; }
+  /* Two panes. minmax(0, 1fr) on the right column is load-bearing: without
+     it a long <pre> in the raw-response block widens the grid instead of
+     scrolling inside it. */
+  .cols {
+    display: grid; grid-template-columns: 340px minmax(0, 1fr);
+    gap: 18px; align-items: start;
+  }
+  @media (max-width: 900px) { .cols { grid-template-columns: 1fr; } }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 18px; margin-bottom: 18px;
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; }
+  label { display: block; font-size: 0.75rem; text-transform: uppercase;
+          letter-spacing: 0.06em; color: var(--muted); margin-bottom: 4px; }
+  input, select, textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit;
+  }
+  textarea { resize: vertical; }
+  .field { flex: 1 1 120px; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer; border-radius: 8px;
+    padding: 10px 16px; border: 1px solid transparent;
+    background: var(--accent); color: #fff;
+  }
+  button.ghost { background: transparent; border-color: var(--line); color: var(--ink); }
+  button:disabled { opacity: 0.55; cursor: not-allowed; }
+  .actions { display: flex; gap: 10px; align-items: center; margin-top: 16px; flex-wrap: wrap; }
+  .note { font-size: 0.85rem; color: var(--muted); }
+  .err { color: var(--err); }
+  .recipe h2 { margin: 0 0 4px; font-size: 1.25rem; }
+  .meta { color: var(--muted); font-size: 0.875rem; margin-bottom: 16px; }
+  .sec { margin-top: 18px; }
+  .sec:first-child { margin-top: 0; }
+  .sec h3 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.06em;
+            color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+  ul, ol { margin: 0; padding-left: 20px; }
+  li { margin-bottom: 6px; }
+  .chip {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600; background: var(--accent-soft);
+    color: var(--accent); margin-right: 6px;
+  }
+  .missing { background: var(--accent-soft); border-left: 3px solid var(--accent);
+             padding: 10px 12px; border-radius: 0 8px 8px 0; }
+  audio { width: 100%; margin-top: 12px; }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--line);
+    border-top-color: var(--accent); border-radius: 50%;
+    display: inline-block; animation: spin 0.8s linear infinite; vertical-align: -2px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+  details summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; }
+  pre { overflow-x: auto; font-size: 0.75rem; background: var(--bg);
+        padding: 10px; border-radius: 8px; border: 1px solid var(--line); }
+
+  /* -- left pane ------------------------------------------------------- */
+  /* The two blocks are titled, not merely coloured: which half of the page
+     is the model's context and which is the reader's dashboard has to
+     survive a screenshot. */
+  .block-title { font-size: 0.95rem; font-weight: 700; margin: 0 0 2px; }
+  .block-why { font-size: 0.78rem; color: var(--muted); margin: 0 0 14px; }
+  .person { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .person:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+  .person b { font-size: 0.95rem; }
+  .tags { font-size: 0.8rem; color: var(--muted); }
+  .tag-strong { color: var(--err); font-weight: 600; }
+  .signal { font-size: 0.87rem; margin-bottom: 8px; }
+  .signal .when { color: var(--muted); font-size: 0.78rem; }
+  .signal.expired { opacity: 0.55; }
+  .signal.expired s { text-decoration: line-through; }
+  .stock { display: flex; justify-content: space-between; gap: 10px;
+           font-size: 0.87rem; padding: 3px 0; }
+  .stock .q { color: var(--muted); white-space: nowrap; }
+  .stock.changed .q { color: var(--ok); font-weight: 600; }
+  .money { display: flex; justify-content: space-between; font-size: 0.87rem; padding: 2px 0; }
+  .money b { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Aaj Kya Banega</h1>
+  <p class="sub">Pick a household, generate a recipe against what is actually in its kitchen, and hear it read to the cook.</p>
+
+  <div class="panel">
+    <div class="row">
+      <div class="field" style="flex:2 1 200px"><label for="household">Household</label>
+        <select id="household"><option value="">loading…</option></select></div>
+      <div class="field"><label for="servings">Servings</label><input id="servings" type="number" value="2" min="1" /></div>
+      <div class="field"><label for="guests">Guests</label><input id="guests" type="number" value="0" min="0" max="18" /></div>
+      <div class="field"><label for="minutes">Minutes</label><input id="minutes" type="number" value="45" min="1" max="360" /></div>
+      <div class="field"><label for="urgency">Urgency</label>
+        <select id="urgency"><option>routine</option><option>urgent</option></select></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <div class="field" style="flex:1 1 100%"><label for="apikey">API key (only if HOUSEHOLD_API_KEY is set)</label>
+        <input id="apikey" type="password" placeholder="leave blank for local runs" autocomplete="off" /></div>
+    </div>
+    <div class="actions">
+      <button id="go">Generate recipe</button>
+      <span id="status" class="note"></span>
+    </div>
+  </div>
+
+  <div class="cols">
+    <aside id="left"></aside>
+    <main id="right"></main>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var left = $("left"), right = $("right");
+  var statusEl = $("status"), goBtn = $("go"), householdSel = $("household");
+
+  // Remembered per browser only. It never reaches the server except as the
+  // X-API-Key header, and it is a demo credential protecting a demo database.
+  try {
+    var saved = localStorage.getItem("household-api-key");
+    if (saved) { $("apikey").value = saved; }
+  } catch (e) { /* private mode: the field just starts empty */ }
+
+  function rememberKey() {
+    try { localStorage.setItem("household-api-key", $("apikey").value.trim()); } catch (e) { /* ignore */ }
+  }
+
+  function headers() {
+    var h = { "Content-Type": "application/json" };
+    var key = $("apikey").value.trim();
+    if (key) { h["X-API-Key"] = key; }
+    return h;
+  }
+
+  function esc(value) {
+    return String(value).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function setStatus(text, busy) {
+    statusEl.innerHTML = busy ? '<span class="spinner"></span> ' + esc(text) : esc(text);
+    statusEl.className = "note";
+  }
+
+  function fail(text) { statusEl.textContent = text; statusEl.className = "note err"; }
+
+  async function detail(response) {
+    try {
+      var body = await response.json();
+      if (typeof body.detail === "string") { return body.detail; }
+      if (body.detail && body.detail.message) { return body.detail.message; }
+      return JSON.stringify(body.detail || body);
+    } catch (e) { return "HTTP " + response.status; }
+  }
+
+  async function getJSON(path) {
+    var response = await fetch(path, { headers: headers() });
+    if (!response.ok) { throw new Error(await detail(response)); }
+    return response.json();
+  }
+
+  function money(value) {
+    return "₹" + Number(value).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+  }
+
+  function list(values, className) {
+    if (!values || !values.length) { return ""; }
+    return '<span class="' + className + '">' + values.map(esc).join(", ") + "</span>";
+  }
+
+  // -- household picker ------------------------------------------------
+  //
+  // Names, not ids. A judge never has to know whether a freshly seeded
+  // database numbered its households 1-3 or 4-6, and a restart that
+  // renumbers them cannot break the page.
+
+  function selectedHousehold() {
+    return householdSel.value ? Number(householdSel.value) : null;
+  }
+
+  async function loadHouseholds() {
+    try {
+      var rows = await getJSON("/api/households");
+    } catch (error) {
+      householdSel.innerHTML = '<option value="">' + esc(error.message) + "</option>";
+      // 401 before a key is typed is expected, not a failure. Retry when one
+      // arrives rather than making the reader reload the page.
+      return;
+    }
+    if (!rows.length) {
+      householdSel.innerHTML = '<option value="">no households seeded</option>';
+      return;
+    }
+    householdSel.innerHTML = rows.map(function (row) {
+      return '<option value="' + esc(row.id) + '">' + esc(row.name) + "</option>";
+    }).join("");
+    refreshLeft();
+    renderRight(null, selectedHousehold(), null);
+  }
+
+  // -- left pane: the household, in two clearly separated halves --------
+
+  async function refreshLeft() {
+    var hid = selectedHousehold();
+    if (hid === null) { left.innerHTML = ""; return; }
+    // Budget and inventory are fetched separately from the context on
+    // purpose: /context is the model's view and deliberately contains no
+    // money and no stock levels. Settled for them here, labelled apart.
+    var results = await Promise.all([
+      getJSON("/api/households/" + hid + "/context").catch(function () { return null; }),
+      getJSON("/api/households/" + hid + "/budget").catch(function () { return null; }),
+      getJSON("/api/households/" + hid + "/inventory").catch(function () { return []; })
+    ]);
+    renderLeft(results[0], results[1], results[2]);
+  }
+
+  function renderLeft(ctx, budget, inventory) {
+    left.innerHTML = contextMarkup(ctx) + dashboardMarkup(budget, inventory);
+  }
+
+  function contextMarkup(ctx) {
+    if (!ctx) { return '<div class="panel"><p class="note">Could not load this household.</p></div>'; }
+    var html = '<div class="panel">';
+    html += '<p class="block-title">What the model was sent</p>';
+    html += '<p class="block-why">Exactly the household memory in the prompt — same code path, so this cannot drift from it.</p>';
+
+    html += '<div class="sec"><h3>Cook</h3>';
+    html += "<p class=\"tags\">" + esc(ctx.cook.name) + " · " + esc(ctx.cook.language) +
+            " · " + esc(ctx.cook.skill_level) + "</p></div>";
+
+    html += '<div class="sec"><h3>Who is eating</h3>';
+    ctx.members.forEach(function (m) {
+      html += '<div class="person"><b>' + esc(m.name) + "</b> ";
+      html += '<span class="tags">' + esc(m.language) + "</span><br />";
+      var bits = [];
+      if (m.health_constraints && m.health_constraints.length) {
+        bits.push(list(m.health_constraints, "tag-strong"));
+      }
+      if (m.allergies && m.allergies.length) {
+        bits.push("allergic to " + list(m.allergies, "tag-strong"));
+      }
+      if (m.dietary_preferences && m.dietary_preferences.length) {
+        bits.push(list(m.dietary_preferences, "tags"));
+      }
+      if (m.dislikes && m.dislikes.length) { bits.push("dislikes " + list(m.dislikes, "tags")); }
+      html += '<span class="tags">' + bits.join(" · ") + "</span></div>";
+    });
+    html += "</div>";
+
+    html += '<div class="sec"><h3>Active preferences</h3>';
+    if (ctx.active_preference_signals.length) {
+      ctx.active_preference_signals.forEach(function (s) {
+        html += '<div class="signal">' + esc(s.signal);
+        if (s.expires_on) { html += ' <span class="when">until ' + esc(s.expires_on) + "</span>"; }
+        else { html += ' <span class="when">standing</span>'; }
+        html += "</div>";
+      });
+    } else {
+      html += '<p class="note">None on file.</p>';
+    }
+    html += "</div>";
+
+    if (ctx.expired_preference_signals.length) {
+      html += '<div class="sec"><h3>Expired</h3>';
+      ctx.expired_preference_signals.forEach(function (s) {
+        html += '<div class="signal expired"><s>' + esc(s.signal) + "</s>" +
+                ' <span class="when">expired ' + esc(s.expires_on) +
+                " — not sent to the model</span></div>";
+      });
+      html += "</div>";
+    }
+    return html + "</div>";
+  }
+
+  function dashboardMarkup(budget, inventory) {
+    var html = '<div class="panel">';
+    html += '<p class="block-title">Reader’s dashboard</p>';
+    html += '<p class="block-why">Not part of the model prompt. Shown so the spend tier and the deductions below are legible.</p>';
+
+    html += '<div class="sec"><h3>Budget this month</h3>';
+    if (budget) {
+      // Served by the API, never subtracted here. remaining_budget has one
+      // definition in app/services.py; a copy in the browser would be the
+      // number a reader sees while judging a decision the gate made using a
+      // different one.
+      var remaining = budget.remaining_inr;
+      html += '<div class="money"><span>Limit</span><b>' + money(budget.monthly_limit) + "</b></div>";
+      html += '<div class="money"><span>Spent</span><b>' + money(budget.spent_amount) + "</b></div>";
+      html += '<div class="money"><span>Planned</span><b>' + money(budget.planned_amount) + "</b></div>";
+      html += '<div class="money"><span>Remaining</span><b>' +
+              (remaining === null ? "unconstrained" : money(remaining)) + "</b></div>";
+    } else {
+      html += '<p class="note">No budget on file — spend is unconstrained.</p>';
+    }
+    html += "</div>";
+
+    html += '<div class="sec"><h3>In the kitchen</h3><div id="stock">';
+    if (inventory.length) {
+      inventory.forEach(function (lot) {
+        html += '<div class="stock" data-lot="' + esc(lot.id) + '"><span>' + esc(lot.ingredient) +
+                '</span><span class="q">' + esc(lot.quantity) + " " + esc(lot.unit) + "</span></div>";
+      });
+    } else {
+      html += '<p class="note">Empty.</p>';
+    }
+    html += "</div></div>";
+    return html + "</div>";
+  }
+
+  // -- generate --------------------------------------------------------
+
+  async function generate() {
+    var hid = selectedHousehold();
+    if (hid === null) { fail("Pick a household first."); return; }
+    goBtn.disabled = true;
+    right.innerHTML = "";
+    setStatus("Starting a loop…", true);
+    try {
+      var loopResponse = await fetch("/api/households/" + hid + "/loops", {
+        method: "POST", headers: headers(), body: JSON.stringify({ trigger_type: "manual" })
+      });
+      if (!loopResponse.ok) { throw new Error(await detail(loopResponse)); }
+      var loop = await loopResponse.json();
+
+      setStatus("Asking the model for a recipe…", true);
+      var body = {
+        servings: Number($("servings").value),
+        guests: Number($("guests").value),
+        available_minutes: Number($("minutes").value),
+        urgency: $("urgency").value
+      };
+      var response = await fetch("/api/v2/households/" + hid + "/loops/" + loop.id + "/recipe", {
+        method: "POST", headers: headers(), body: JSON.stringify(body)
+      });
+      if (!response.ok) { throw new Error(await detail(response)); }
+      var data = await response.json();
+
+      rememberKey();
+      setStatus("Generated by " + data.generation_provider + ".");
+      renderRight(data, hid, loop.id);
+    } catch (error) {
+      fail(error.message || String(error));
+    } finally {
+      goBtn.disabled = false;
+    }
+  }
+
+  // -- right pane ------------------------------------------------------
+  //
+  // Two render roots, not one. The left pane re-renders on its own after a
+  // cook, and it must not be able to destroy the right pane's event
+  // listeners to do it. Within each root the original rule still holds:
+  // build one string, assign it once, then hydrate through SEPARATE
+  // functions, so an early return in one hydrator cannot skip another --
+  // the bug that existed when the audio guard lived inline in render().
+
+  function renderRight(data, hid, loopId) {
+    // `data` is null before a recipe exists: the event log still renders, so
+    // a reader can watch the trail from the first click rather than after it.
+    var html = data
+      ? recipeMarkup(data) + instamartMarkup(data) + gateMarkup(data) + cookedPanelMarkup(data)
+      : "";
+    right.innerHTML = html + auditMarkup();
+    if (data) {
+      hydrateAudio(data, hid, loopId);
+      hydrateInstamart(data, hid, loopId);
+      hydrateGate(data, hid, loopId);
+      hydrateCookedPanel(data, hid, loopId);
+    }
+    refreshAudit(hid);
+  }
+
+  // -- Instamart cart --------------------------------------------------
+  //
+  // Builds a cart only. There is no checkout button because there is no
+  // checkout path: the registry refuses every order and payment method.
+
+  var UNMATCHED_REASONS = {
+    no_search_results: "no search results",
+    out_of_stock: "every result was out of stock",
+    search_failed: "search failed"
+  };
+
+  function instamartMarkup(data) {
+    if (!data.missing_ingredients.length) { return ""; }
+    var html = '<div class="panel" id="im-panel">';
+    html += "<h2>Instamart cart</h2>";
+    html += '<p class="sub" style="margin-bottom:16px">Build a cart from the missing ingredients in this recipe. ' +
+            "Choose a delivery address, then build the cart. Nothing is ordered or paid for.</p>";
+    html += '<div class="row"><div class="field" style="flex:1 1 100%">' +
+            '<label for="im-address">Delivery address</label>' +
+            '<select id="im-address" disabled><option value="">loading…</option></select></div></div>';
+    html += '<div class="actions"><button id="im-build" disabled>Build cart</button>' +
+            '<button id="im-refresh" class="ghost">Refresh snapshot</button>' +
+            '<span id="im-note" class="note"></span></div>';
+    html += '<div id="im-result"></div>';
+    return html + "</div>";
+  }
+
+  function hydrateInstamart(data, hid, loopId) {
+    var panel = $("im-panel");
+    if (!panel) { return; }
+    var select = $("im-address"), build = $("im-build"), refresh = $("im-refresh");
+    var note = $("im-note"), result = $("im-result");
+
+    function busy(text) { note.className = "note"; note.innerHTML = '<span class="spinner"></span> ' + esc(text); }
+    function failed(error) { note.innerHTML = '<span class="err">' + esc(error.message || String(error)) + "</span>"; }
+
+    loadInstamartAddresses(hid).then(function (addresses) {
+      if (!addresses.length) {
+        select.innerHTML = '<option value="">none</option>';
+        note.textContent = "No saved delivery addresses found.";
+        return;
+      }
+      select.innerHTML = addresses.map(function (a) {
+        return '<option value="' + esc(a.id) + '">' + esc(a.label) + "</option>";
+      }).join("");
+      select.disabled = false;
+      build.disabled = false;
+    }).catch(function (error) {
+      select.innerHTML = '<option value="">unavailable</option>';
+      failed(error);
+    });
+
+    build.addEventListener("click", async function () {
+      // The recipe's gap is priced as `missing_quantity`; the cart endpoint
+      // calls it `quantity` and requires it to be positive.
+      var usable = data.missing_ingredients.filter(function (m) { return Number(m.missing_quantity) > 0; });
+      var dropped = data.missing_ingredients.length - usable.length;
+      if (!usable.length) { failed(new Error("No missing ingredient has a positive quantity to buy.")); return; }
+      var payload = {
+        selectedAddressId: select.value,
+        missingIngredients: usable.map(function (m) {
+          return {
+            ingredient: m.ingredient,
+            quantity: Number(m.missing_quantity),
+            unit: m.unit,
+            quantity_unknown: Boolean(m.quantity_unknown)
+          };
+        })
+      };
+      build.disabled = true;
+      busy("Searching Instamart and building the cart…");
+      try {
+        var response = await fetch("/api/households/" + hid + "/loops/" + loopId + "/instamart-cart", {
+          method: "POST", headers: headers(), body: JSON.stringify(payload)
+        });
+        if (!response.ok) { throw new Error(await detail(response)); }
+        var body = await response.json();
+        result.innerHTML = cartResultMarkup(body);
+        var notes = [body.unmatched_items.length
+          ? "Cart built, but some ingredients could not be matched."
+          : "Cart built successfully."];
+        if (dropped) { notes.push(dropped + " ingredient(s) with no quantity were left out."); }
+        note.textContent = notes.join(" ");
+      } catch (error) {
+        failed(error);
+      } finally {
+        build.disabled = !select.value;
+      }
+      refreshAudit(hid);
+    });
+
+    refresh.addEventListener("click", async function () {
+      refresh.disabled = true;
+      busy("Loading the latest snapshot…");
+      try {
+        var row = await getJSON("/api/households/" + hid + "/loops/" + loopId + "/instamart-cart");
+        // The snapshot endpoint returns the stored row, whose field names
+        // differ from the build response; the renderer takes the latter.
+        result.innerHTML = cartResultMarkup({
+          snapshot_id: row.id,
+          selected_address_id: row.selected_address_id,
+          matched_items: row.matched_items_json || [],
+          unmatched_items: row.unmatched_items_json || [],
+          live_cart: row.live_cart_json || {},
+          created_at: row.created_at
+        });
+        note.textContent = "Showing the latest saved snapshot.";
+      } catch (error) {
+        failed(error);
+      } finally {
+        refresh.disabled = false;
+      }
+    });
+  }
+
+  async function loadInstamartAddresses(hid) {
+    var body = await getJSON("/api/households/" + hid + "/instamart/addresses");
+    var rows = Array.isArray(body) ? body : (body.data || body.addresses || []);
+    if (!Array.isArray(rows)) { rows = rows.addresses || []; }
+    return rows.map(function (a) {
+      var id = a.id || a.addressId;
+      var text = a.displayAddress || a.address || "";
+      return { id: id, label: (a.label || a.annotation || "Address") + (text ? " — " + text : "") };
+    }).filter(function (a) { return a.id; });
+  }
+
+  function cartResultMarkup(body) {
+    var html = '<div class="sec"><h3>Snapshot</h3>';
+    html += '<div class="money"><span>Snapshot id</span><b>' + esc(body.snapshot_id) + "</b></div>";
+    html += '<div class="money"><span>Address id</span><b>' + esc(body.selected_address_id) + "</b></div>";
+    if (body.created_at) {
+      html += '<div class="money"><span>Built at</span><b>' +
+              esc(String(body.created_at).replace("T", " ").slice(0, 19)) + "</b></div>";
+    }
+    html += "</div>";
+
+    html += '<div class="sec"><h3>Matched</h3>';
+    if (body.matched_items.length) {
+      body.matched_items.forEach(function (m) {
+        html += '<div class="signal"><b>' + esc(m.ingredient) + "</b> → " + esc(m.item_name || m.spin_id) +
+                (m.item_variant ? ' <span class="when">' + esc(m.item_variant) + "</span>" : "") +
+                '<br /><span class="tags">needed ' + esc(m.requested_quantity) + " " + esc(m.unit) +
+                " · adding " + esc(m.cart_quantity) + " to cart · spin " + esc(m.spin_id) +
+                (m.sku_id ? " · sku " + esc(m.sku_id) : "") + "</span></div>";
+      });
+    } else {
+      html += '<p class="note">Nothing matched, so the Instamart cart was left unchanged.</p>';
+    }
+    html += "</div>";
+
+    if (body.unmatched_items.length) {
+      html += '<div class="sec"><h3>Not matched</h3><div class="missing">';
+      html += body.unmatched_items.map(function (u) {
+        return esc(u.ingredient) + " — " + esc(UNMATCHED_REASONS[u.reason] || u.reason);
+      }).join("<br />");
+      html += "</div></div>";
+    }
+
+    html += liveCartMarkup(body.live_cart, body.matched_items);
+    return html;
+  }
+
+  function liveCartMarkup(cart, matched) {
+    var html = '<div class="sec"><h3>Live cart</h3>';
+    if (!cart || !Object.keys(cart).length) {
+      return html + '<p class="note">No live cart was returned.</p></div>';
+    }
+    // Cart lines carry only spin ids; name them from what this build matched.
+    var names = {};
+    matched.forEach(function (m) { names[m.spin_id] = m.item_name || m.ingredient; });
+    var items = Array.isArray(cart.items) ? cart.items : [];
+    if (items.length) {
+      items.forEach(function (item) {
+        var name = item.displayName || item.name || names[item.spinId] || item.spinId || "item";
+        var unavailable = item.isAvailable === false || item.isInStockAndAvailable === false;
+        html += '<div class="stock"><span>' + esc(name) + " × " + esc(item.quantity) +
+                (unavailable ? ' <span class="tag-strong">unavailable</span>' : "") + "</span>" +
+                '<span class="q">' + (item.total != null ? money(item.total) : "") + "</span></div>";
+      });
+    } else {
+      html += '<p class="note">The cart is empty.</p>';
+    }
+    var bill = cart.bill || {};
+    if (bill.itemTotal != null) { html += '<div class="money"><span>Items</span><b>' + money(bill.itemTotal) + "</b></div>"; }
+    if (bill.deliveryFee != null) { html += '<div class="money"><span>Delivery</span><b>' + money(bill.deliveryFee) + "</b></div>"; }
+    if (bill.toPay != null) { html += '<div class="money"><span>To pay</span><b>' + money(bill.toPay) + "</b></div>"; }
+    var warnings = [].concat(cart.warnings || [], cart.messages || []);
+    if (warnings.length) {
+      html += '<p class="note err" style="margin-top:8px">' + warnings.map(function (w) {
+        return esc(typeof w === "string" ? w : (w.message || JSON.stringify(w)));
+      }).join("<br />") + "</p>";
+    }
+    html += '<details class="sec"><summary>Raw cart</summary><pre>' +
+            esc(JSON.stringify(cart, null, 2)) + "</pre></details>";
+    return html + "</div>";
+  }
+
+  // -- the spend gate --------------------------------------------------
+  //
+  // Only rendered above the green tier. Green spends unattended by design,
+  // so showing an Approve button for it would misrepresent what the system
+  // actually does.
+
+  function gateMarkup(data) {
+    if (data.tier === "green" || !data.approval_request_id) { return ""; }
+    var html = '<div class="panel" id="gate-panel">';
+    html += "<h2>This needs a person</h2>";
+    html += '<p class="sub" style="margin-bottom:16px">' + esc(data.tier_reason) + "</p>";
+    html += '<div class="money"><span>Basket</span><b>' + money(data.amount_inr) + "</b></div>";
+    html += '<div class="money"><span>Provider</span><b>' + esc(data.chosen_provider || "—") + "</b></div>";
+    html += '<div class="money"><span>Tier</span><b>' + esc(data.tier) + "</b></div>";
+    html += '<div class="actions">' +
+            '<button id="gate-approve">Approve</button>' +
+            '<button id="gate-reject" class="ghost">Reject</button>' +
+            '<button id="gate-execute" class="ghost" disabled>Execute order</button>' +
+            '<span id="gate-note" class="note"></span></div>';
+    // The refusal is the most interesting thing this system does, so it gets
+    // a deliberate way to be triggered rather than only happening by accident.
+    html += '<details class="sec"><summary>Change the basket after approving</summary>' +
+            '<p class="note">Re-plans this same loop. The approval keeps the amount it was ' +
+            "granted for, so executing afterwards is refused as stale rather than spending " +
+            "against a figure nobody agreed to.</p>" +
+            '<div class="actions"><button id="gate-replan" class="ghost">Re-plan this loop</button></div>' +
+            "</details>";
+    return html + "</div>";
+  }
+
+  function hydrateGate(data, hid, loopId) {
+    var panel = $("gate-panel");
+    if (!panel) { return; }
+    var note = $("gate-note");
+    var approve = $("gate-approve"), reject = $("gate-reject");
+    var execute = $("gate-execute"), replan = $("gate-replan");
+
+    async function decide(approved) {
+      approve.disabled = true;
+      reject.disabled = true;
+      note.className = "note";
+      note.innerHTML = '<span class="spinner"></span> Recording…';
+      try {
+        var response = await fetch(
+          "/api/households/" + hid + "/approvals/" + data.approval_request_id + "/decide",
+          {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({ approved: approved, reason: "decided from the demo console" })
+          }
+        );
+        if (!response.ok) { throw new Error(await detail(response)); }
+        note.textContent = approved ? "Approved." : "Rejected.";
+        execute.disabled = !approved;
+      } catch (error) {
+        approve.disabled = false;
+        reject.disabled = false;
+        note.innerHTML = '<span class="err">' + esc(error.message) + "</span>";
+      }
+      refreshAudit(hid);
+    }
+
+    approve.addEventListener("click", function () { decide(true); });
+    reject.addEventListener("click", function () { decide(false); });
+
+    execute.addEventListener("click", async function () {
+      execute.disabled = true;
+      note.className = "note";
+      note.innerHTML = '<span class="spinner"></span> Executing…';
+      try {
+        // No amount and no tier: the server reads the basket it priced onto
+        // this loop. Sending them would be ignored.
+        var response = await fetch(
+          "/api/households/" + hid + "/loops/" + loopId + "/execute-order",
+          { method: "POST", headers: headers() }
+        );
+        var body = await response.json();
+        if (!response.ok) {
+          // A refusal here is the system working, not the demo breaking.
+          note.innerHTML = '<span class="err">Refused:</span> ' + esc(body.detail);
+        } else if (body.executed) {
+          note.textContent = "Paid. Reference " + body.reference;
+        } else {
+          note.innerHTML = esc(body.reason);
+        }
+      } catch (error) {
+        note.innerHTML = '<span class="err">' + esc(error.message) + "</span>";
+      }
+      refreshAudit(hid);
+    });
+
+    if (replan) {
+      replan.addEventListener("click", async function () {
+        replan.disabled = true;
+        note.className = "note";
+        note.innerHTML = '<span class="spinner"></span> Re-planning…';
+        try {
+          var response = await fetch("/api/households/" + hid + "/loops/" + loopId + "/plan", {
+            method: "POST",
+            headers: headers(),
+            body: JSON.stringify({
+              servings: Number($("servings").value),
+              guests: Number($("guests").value),
+              available_minutes: Number($("minutes").value)
+            })
+          });
+          if (!response.ok) { throw new Error(await detail(response)); }
+          var replanned = await response.json();
+          var moved = Number(replanned.amount_inr) !== Number(data.amount_inr);
+          note.innerHTML = moved
+            ? "Basket moved from " + money(data.amount_inr) + " to " + money(replanned.amount_inr) +
+              ". Executing now should be refused as stale."
+            : "The basket priced the same (" + money(replanned.amount_inr) +
+              "), so the approval is not stale and executing will still work.";
+          execute.disabled = false;
+        } catch (error) {
+          replan.disabled = false;
+          note.innerHTML = '<span class="err">' + esc(error.message) + "</span>";
+        }
+        refreshAudit(hid);
+      });
+    }
+  }
+
+  // -- event log -------------------------------------------------------
+  //
+  // Every decision this system makes already writes an audit row. The log is
+  // the difference between a refusal being correct and a refusal being
+  // visible.
+
+  function auditMarkup() {
+    return '<div class="panel"><div class="sec"><h3>Event log</h3>' +
+           '<div id="audit">' + '<p class="note">—</p>' + "</div></div></div>";
+  }
+
+  var REFUSAL_EVENTS = ["tool_call_refused", "execution_refused", "loop_unclosed"];
+
+  async function refreshAudit(hid) {
+    var slot = $("audit");
+    if (!slot || hid === null) { return; }
+    try {
+      var events = await getJSON("/api/households/" + hid + "/audit");
+    } catch (error) {
+      slot.innerHTML = '<p class="note">' + esc(error.message) + "</p>";
+      return;
+    }
+    if (!events.length) {
+      slot.innerHTML = '<p class="note">Nothing recorded yet.</p>';
+      return;
+    }
+    slot.innerHTML = events.map(function (e) {
+      var refusal = REFUSAL_EVENTS.indexOf(e.event) !== -1;
+      return '<div class="signal"><b' + (refusal ? ' class="tag-strong"' : "") + ">" +
+             esc(e.event) + "</b> " + '<span class="when">' +
+             esc(String(e.created_at).replace("T", " ").slice(0, 19)) + "</span><br />" +
+             '<span class="tags">' + esc(e.detail) + "</span></div>";
+    }).join("");
+  }
+
+  function recipeMarkup(data) {
+    var r = data.recipe;
+    var html = '<div class="panel recipe">';
+    html += "<h2>" + esc(r.title) + "</h2>";
+    html += '<p class="meta">Serves ' + esc(r.servings) + " · about " + esc(r.prep_minutes) +
+            " minutes · " + Math.round(data.availability_ratio * 100) + "% already in the kitchen</p>";
+
+    if (data.missing_ingredients.length) {
+      html += '<div class="missing"><strong>Not in the kitchen:</strong><ul>';
+      data.missing_ingredients.forEach(function (m) {
+        html += "<li>" + esc(m.ingredient) +
+                (m.quantity_unknown ? "" : " — " + esc(m.missing_quantity) + " " + esc(m.unit)) + "</li>";
+      });
+      html += "</ul></div>";
+    }
+
+    html += '<div class="sec"><h3>Ingredients</h3><ul>';
+    r.ingredients.forEach(function (i) {
+      html += "<li>" + esc(i.quantity) + " " + esc(i.unit) + " " + esc(i.ingredient) + "</li>";
+    });
+    html += "</ul></div>";
+
+    if (r.leftovers_used && r.leftovers_used.length) {
+      html += '<div class="sec"><h3>From leftovers</h3><ul>';
+      r.leftovers_used.forEach(function (l) {
+        html += "<li>" + esc(l.dish_name) + " — " + esc(l.portions) + " portion" +
+                (Number(l.portions) === 1 ? "" : "s") + "</li>";
+      });
+      html += "</ul></div>";
+    }
+
+    if (r.assumed_pantry_staples.length) {
+      html += '<div class="sec"><h3>Assumed on hand</h3><p class="note">' +
+              r.assumed_pantry_staples.map(esc).join(", ") + "</p></div>";
+    }
+
+    html += '<div class="sec"><h3>Steps</h3><ol>';
+    r.steps.forEach(function (s) { html += "<li>" + esc(s) + "</li>"; });
+    html += "</ol></div>";
+
+    html += '<div class="sec"><h3>Nutrition</h3><ul>';
+    r.nutrition_notes.forEach(function (n) { html += "<li>" + esc(n) + "</li>"; });
+    html += "</ul></div>";
+
+    html += '<div class="sec"><h3>Procurement</h3><p><span class="chip">' + esc(data.tier) +
+            '</span><span class="chip">' + esc(data.procurement_path) + "</span></p>" +
+            '<p class="note">' + esc(data.procurement_reason) + "</p></div>";
+
+    html += '<div class="sec"><h3>Audio briefing</h3><div id="audio-slot"></div></div>';
+    html += '<details class="sec"><summary>Raw response</summary><pre>' +
+            esc(JSON.stringify(data, null, 2)) + "</pre></details>";
+    return html + "</div>";
+  }
+
+  function hydrateAudio(data, hid, loopId) {
+    var slot = $("audio-slot");
+    if (!slot) { return; }
+    if (!data.audio_id) {
+      // Deliberately not an early return out of renderRight(): this used to
+      // bail before anything below it was wired up, so a household whose
+      // cook language has no configured voice silently lost the rest of the
+      // page.
+      slot.innerHTML = '<p class="note">No voice is configured for this cook’s language, ' +
+                       "so this recipe is text only.</p>";
+      return;
+    }
+    var button = document.createElement("button");
+    button.className = "ghost";
+    button.textContent = "▶ Read it to me";
+    var note = document.createElement("p");
+    note.className = "note";
+    note.style.marginTop = "8px";
+    slot.appendChild(button);
+    slot.appendChild(note);
+
+    button.addEventListener("click", async function () {
+      button.disabled = true;
+      note.innerHTML = '<span class="spinner"></span> Rewriting and synthesising…';
+      try {
+        var response = await fetch(
+          "/api/v2/households/" + hid + "/loops/" + loopId + "/recipe-audio/" + data.audio_id,
+          { headers: headers() }
+        );
+        if (!response.ok) { throw new Error(await detail(response)); }
+        var blob = await response.blob();
+        var player = document.createElement("audio");
+        player.controls = true;
+        player.src = URL.createObjectURL(blob);
+        slot.replaceChild(player, button);
+        note.textContent = "";
+        player.play().catch(function () { /* autoplay blocked; controls are there */ });
+      } catch (error) {
+        button.disabled = false;
+        note.innerHTML = '<span class="err">' + esc(error.message) +
+                         "</span><br />The recipe above is unchanged — text is always available.";
+      }
+    });
+  }
+
+  // -- "I cooked this" -------------------------------------------------
+  //
+  // The quantities are the recipe's own. There is nothing to edit here: the
+  // agent knows what it asked for, and the server decides what can actually
+  // be deducted -- it refuses to deduct across units it cannot convert and
+  // reports the mismatch instead of guessing.
+
+  function cookedPanelMarkup(data) {
+    var html = '<div class="panel" id="cooked-panel">';
+    html += "<h2>I cooked this</h2>";
+    html += '<p class="sub" style="margin-bottom:16px">Closes the loop: writes it to history and takes the ingredients out of the kitchen.</p>';
+
+    html += '<div class="sec"><h3>Will come out of the kitchen</h3><ul>';
+    data.recipe.ingredients.forEach(function (i) {
+      html += "<li>" + esc(i.quantity) + " " + esc(i.unit) + " " + esc(i.ingredient) + "</li>";
+    });
+    html += "</ul></div>";
+
+    // Defaulted and folded away, so the primary path is one button. <details>
+    // keeps its contents in the DOM when closed, so these read fine unopened.
+    html += '<details class="sec"><summary>Add detail</summary>';
+    html += '<div class="row" style="margin-top:12px">';
+    html += '<div class="field" style="flex:2 1 220px"><label for="ck-dish">Dish</label>' +
+            '<input id="ck-dish" type="text" value="' + esc(data.recipe.title) + '" /></div>';
+    html += '<div class="field"><label for="ck-rating">Rating</label><select id="ck-rating">' +
+            '<option value="">—</option><option>1</option><option>2</option><option>3</option>' +
+            "<option>4</option><option selected>5</option></select></div>";
+    html += '<div class="field"><label for="ck-left">Leftover portions</label>' +
+            '<input id="ck-left" type="number" min="0" step="any" value="0" /></div>';
+    html += "</div>";
+    html += '<div class="row" style="margin-top:12px"><div class="field" style="flex:1 1 100%">' +
+            '<label for="ck-feedback">How did it go?</label>' +
+            '<textarea id="ck-feedback" rows="2" placeholder="optional"></textarea></div></div>';
+    html += '<p style="margin:14px 0 0"><label style="text-transform:none;letter-spacing:0;font-size:0.9rem">' +
+            '<input id="ck-mishap" type="checkbox" style="width:auto;margin-right:8px" />' +
+            "Something went wrong (records it as not accepted)</label></p>";
+    html += "</details>";
+
+    html += '<div class="actions"><button id="ck-submit">I cooked this</button>' +
+            '<span id="ck-note" class="note"></span></div>';
+    return html + "</div>";
+  }
+
+  function hydrateCookedPanel(data, hid, loopId) {
+    var panel = $("cooked-panel");
+    if (!panel) { return; }
+    var submit = $("ck-submit");
+    var note = $("ck-note");
+
+    submit.addEventListener("click", async function () {
+      // ConsumedItem.quantity is gt=0, so a zero row would 422 the whole
+      // submission. Recipes should not contain one, but the filter costs
+      // nothing and the failure would be total.
+      var consumed = data.recipe.ingredients
+        .filter(function (i) { return Number(i.quantity) > 0; })
+        .map(function (i) {
+          return { name: i.ingredient, quantity: Number(i.quantity), unit: i.unit };
+        });
+
+      var rating = $("ck-rating").value;
+      var payload = {
+        dish_name: $("ck-dish").value.trim() || data.recipe.title,
+        rating: rating ? Number(rating) : null,
+        feedback: $("ck-feedback").value,
+        leftovers_portions: Number($("ck-left").value) || 0,
+        mishap: $("ck-mishap").checked,
+        consumed: consumed
+      };
+
+      submit.disabled = true;
+      note.className = "note";
+      note.innerHTML = '<span class="spinner"></span> Closing…';
+      try {
+        var response = await fetch("/api/households/" + hid + "/loops/" + loopId + "/outcome", {
+          method: "POST", headers: headers(), body: JSON.stringify(payload)
+        });
+        if (!response.ok) { throw new Error(await detail(response)); }
+        var body = await response.json();
+
+        // capture_outcome does not validate loop state, so a second submit
+        // would write a duplicate history row and a second audit event.
+        // Staying disabled is the only thing preventing that.
+        submit.textContent = "Loop closed";
+        note.textContent = "";
+        showDeductions(panel, body.deducted, body.skipped);
+        refreshLeft();
+        refreshAudit(hid);
+      } catch (error) {
+        submit.disabled = false;
+        note.innerHTML = '<span class="err">' + esc(error.message) +
+                         "</span><br />Nothing was written — the loop is still open.";
+      }
+    });
+  }
+
+  function showDeductions(panel, deducted, skipped) {
+    // Rendered from the server's own answer rather than by diffing two
+    // inventory snapshots. The server is the authority on what it deducted,
+    // and re-fetching to diff would race the demo reseed job.
+    var block = document.createElement("div");
+    block.className = "sec";
+    var html = "<h3>Kitchen updated</h3>";
+
+    if (deducted.length) {
+      html += '<div class="missing">' + deducted.map(function (d) {
+        return esc(d.ingredient) + ": " + esc(d.before) + " → " + esc(d.after) + " " + esc(d.unit);
+      }).join("<br />") + "</div>";
+    } else {
+      html += '<p class="note">Nothing was deducted.</p>';
+    }
+
+    if (skipped.length) {
+      html += '<p class="note" style="margin-top:10px">' + skipped.map(function (s) {
+        if (s.reason === "unit_mismatch") {
+          return esc(s.ingredient) + " — " + esc(s.stock_quantity) + " " + esc(s.stock_unit) +
+                 " in stock, recipe asks " + esc(s.requested_quantity) + " " + esc(s.requested_unit) +
+                 " (not deducted: units don’t match)";
+        }
+        if (s.reason === "insufficient_stock") {
+          return esc(s.ingredient) + " — ran out, " + esc(s.shortfall) + " " +
+                 esc(s.requested_unit) + " short";
+        }
+        return esc(s.ingredient) + " — not in inventory, nothing deducted";
+      }).join("<br />") + "</p>";
+    }
+
+    block.innerHTML = html;
+    panel.appendChild(block);
+  }
+
+  goBtn.addEventListener("click", generate);
+  householdSel.addEventListener("change", function () {
+    renderRight(null, selectedHousehold(), null);
+    refreshLeft();
+  });
+  // A 401 before a key is typed is the expected first state on a deployed
+  // instance, so the picker retries itself instead of demanding a reload.
+  $("apikey").addEventListener("change", function () {
+    rememberKey();
+    if (!selectedHousehold()) { loadHouseholds(); } else { refreshLeft(); }
+  });
+
+  loadHouseholds();
+})();
+</script>
+</body>
+</html>

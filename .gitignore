@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+venv/
+
+# Local secrets/config — see .env.example for the template
+.env
+
+# Local runtime data (SQLite db, etc.)
+data/*.db
+data/*.sqlite3
+
+# Test/coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor/tooling
+.claude/settings.local.json
+
+# OS
+.DS_Store
