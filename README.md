@@ -89,7 +89,7 @@ audio cache and synthesis cap.
 
 ## Status
 
-- **264 tests passing, 3 skipped** (the 3 need live AWS credentials).
+- **269 tests passing, 3 skipped** (the 3 need live AWS credentials).
   **100% line and 99% branch coverage on `app/services.py`**, the deterministic
   decision core — one partial branch in `effective_freshness` is genuinely not
   exercised, and is named here rather than rounded up.
@@ -117,7 +117,7 @@ It boots fully offline with zero credentials. Without model API keys, recipe
 generation needs a local Ollama; everything else works.
 
 ```bash
-pytest                                       # 264 passed, 3 skipped
+pytest                                       # 269 passed, 3 skipped
 pytest --cov=app --cov-report=term-missing   # coverage breakdown
 ```
 

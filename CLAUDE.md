@@ -21,7 +21,7 @@ cp .env.example .env                  # optional — every setting has a safe de
 python -m app.main                    # serve on 127.0.0.1:8000 (docs at /docs)
 python scripts/seed_demo_households.py --refresh   # demo households, restored in place
 
-pytest                                          # full suite (264 passed, 3 skipped without live AWS creds)
+pytest                                          # full suite (269 passed, 3 skipped without live AWS creds)
 pytest tests/test_services.py                   # single file
 pytest tests/test_services.py::test_name -v     # single test
 pytest --cov=app --cov-report=term-missing      # coverage breakdown
@@ -247,6 +247,11 @@ the model) if they exceed the time limit, have fewer than
 `recipe_min_stocked_ingredient_ratio` (default 60%) fully stocked
 purchasable ingredients, or the cheapest quoted missing basket exceeds
 remaining budget; one correction request is allowed before returning `422`.
+`exclude_dishes` (at most two titles) is sent by the demo page, which keeps
+the last recipes it showed per household in a JS `Set` in page memory. It
+reaches the model inside `HOUSEHOLD_CONTEXT.loop` as data and is a prompt
+instruction only — nothing deterministically rejects a repeat, and the
+server stores none of it, because a generated recipe is never persisted.
 Leftovers are already-cooked dishes, so they go in the recipe's separate
 `leftovers_used` list and never in `ingredients` — an ingredient is checked
 against inventory only, so a leftover listed there reads as missing and gets

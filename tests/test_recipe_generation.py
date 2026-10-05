@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 
 import pytest
@@ -334,3 +335,42 @@ def test_stocked_raw_ingredient_sharing_a_leftover_name_is_allowed():
     )
     assessment = _assess(recipe, leftovers=[_leftover_row("Rajma", 2, 2)], inventory=_stocked("Rajma"))
     assert assessment.gap == []
+
+
+def test_excluded_dishes_reach_the_prompt_as_data(client):
+    provider = FakeRecipeProvider([_recipe()])
+    _set_recipe_provider(provider)
+    household_id, loop_id = _household_with_context(client)
+
+    response = client.post(
+        f"/api/v2/households/{household_id}/loops/{loop_id}/recipe",
+        json={"servings": 2, "available_minutes": 30, "exclude_dishes": [" Rasam ", "Lemon Rice"]},
+    )
+    assert response.status_code == 200, response.text
+
+    prompt = provider.prompts[0]
+    assert "HOUSEHOLD_CONTEXT.loop.exclude_dishes" in prompt
+    payload = json.loads(prompt.split("HOUSEHOLD_CONTEXT:\n", 1)[1].splitlines()[0])
+    assert payload["loop"]["exclude_dishes"] == ["Rasam", "Lemon Rice"]
+
+
+@pytest.mark.parametrize(
+    "exclude_dishes",
+    [["Rasam", "Lemon Rice", "Upma"], ["   "], ["x" * 121]],
+)
+def test_exclude_dishes_is_capped_at_two_non_blank_titles(client, exclude_dishes):
+    _set_recipe_provider(FakeRecipeProvider([_recipe()]))
+    household_id, loop_id = _household_with_context(client)
+
+    response = client.post(
+        f"/api/v2/households/{household_id}/loops/{loop_id}/recipe",
+        json={"servings": 2, "available_minutes": 30, "exclude_dishes": exclude_dishes},
+    )
+    assert response.status_code == 422
+
+
+def test_exclude_dishes_drops_case_insensitive_duplicates():
+    from app.schemas import RecipeGenerationRequest
+
+    request = RecipeGenerationRequest(exclude_dishes=["Rasam", "rasam"])
+    assert request.exclude_dishes == ["Rasam"]

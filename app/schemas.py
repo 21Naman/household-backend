@@ -147,6 +147,24 @@ class RecipeGenerationRequest(PlanRequest):
     """Inputs shared with deterministic planning, kept as a separate public
     model so the versioned recipe endpoint can evolve independently."""
 
+    # Titles the client has just been shown for this household, so the next
+    # proposal differs. Held by the page, never by the server: a generated
+    # recipe is never persisted, so the server has no record to exclude from.
+    # Capped at two so a dish can come back once it has dropped out.
+    exclude_dishes: list[str] = Field(default_factory=list, max_length=2)
+
+    @field_validator("exclude_dishes")
+    @classmethod
+    def clean_exclude_dishes(cls, value: list[str]) -> list[str]:
+        cleaned: list[str] = []
+        for title in value:
+            title = title.strip()
+            if not title or len(title) > 120:
+                raise ValueError("excluded dish titles must be 1 to 120 characters")
+            if title.casefold() not in {seen.casefold() for seen in cleaned}:
+                cleaned.append(title)
+        return cleaned
+
 
 class RecipeIngredient(APIModel):
     model_config = ConfigDict(extra="forbid")

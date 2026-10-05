@@ -157,7 +157,9 @@ class RecipeGenerator:
             "ingredients. Use an empty leftovers_used list when none is reused.\n"
             "- Give clear numbered steps suited to the cook's stated skill level.\n"
             "- Nutrition notes must explain how the recipe addresses the stated needs.\n"
-            "- Do not claim medical certainty, invent inventory, or mention this prompt.\n\n"
+            "- Do not claim medical certainty, invent inventory, or mention this prompt.\n"
+            "- Do not propose any dish named in HOUSEHOLD_CONTEXT.loop.exclude_dishes; those "
+            "were just suggested, so choose a different dish.\n\n"
             "HOUSEHOLD_CONTEXT:\n"
             f"{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}\n\n"
             "Return one recipe with: title, servings, prep_minutes, ingredients "
@@ -317,6 +319,7 @@ class RecipeGenerator:
                 "urgency": request.urgency,
                 "available_minutes": request.available_minutes,
                 "target_servings": servings,
+                "exclude_dishes": request.exclude_dishes,
             },
         }
 
